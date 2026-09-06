@@ -28,12 +28,15 @@ logger = logging.getLogger(__name__)
 
 # Keywords that suggest food logging intent
 FOOD_LOG_KEYWORDS = [
-    "makan", "minum", "habis makan", "baru makan", "udah makan",
-    "sarapan", "lunch", "dinner", "snack", "cemilan",
-    "nasi", "ayam", "telur", "ikan", "tempe", "tahu",
-    "mie", "pasta", "roti", "susu", "kopi", "teh",
-    "buah", "sayur", "pizza", "burger", "bakso", "soto",
-    "gw makan", "aku makan", "saya makan", "tadi makan",
+    "makan", "minum", "habis makan", "baru makan", "udah makan", "lg makan", "lagi makan",
+    "sarapan", "lunch", "dinner", "snack", "cemilan", "ngemil", "sarap",
+    "nasi", "ayam", "telur", "ikan", "tempe", "tahu", "daging", "sapi", "kambing", "bebek",
+    "mie", "bihun", "kwetiau", "pasta", "spaghetti", "roti", "susu", "kopi", "teh", "jus",
+    "buah", "sayur", "pizza", "burger", "bakso", "soto", "sate", "rendang", "gulai",
+    "sambal", "sambel", "pepes", "opor", "rawon", "pecel", "geprek", "penyet",
+    "udang", "cumi", "kepiting", "seafood", "martabak", "gorengan", "kentang",
+    "gw makan", "aku makan", "saya makan", "tadi makan", "mkn",
+    "gram", "100g", "150g", "200g", "250g", "porsi", "potong", "butir", "mangkok", "mangkuk", "piring", "gelas", "sendok", "sdm",
 ]
 
 

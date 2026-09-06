@@ -55,7 +55,14 @@ async def log_food_items(
     logged = []
 
     for item in items:
-        nutrition = calculate_food_nutrition(item.food_name, item.amount_g)
+        nutrition = calculate_food_nutrition(
+            food_name=item.food_name,
+            amount_g=item.amount_g,
+            estimated_calories=item.calories,
+            estimated_protein_g=item.protein_g,
+            estimated_carbs_g=item.carbs_g,
+            estimated_fat_g=item.fat_g,
+        )
 
         await db.execute(
             """

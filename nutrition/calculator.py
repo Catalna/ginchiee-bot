@@ -90,11 +90,26 @@ class NutritionInfo:
     fat_g: float
 
 
-def calculate_food_nutrition(food_name: str, amount_g: float) -> NutritionInfo:
+def calculate_food_nutrition(
+    food_name: str,
+    amount_g: float,
+    estimated_calories: float | None = None,
+    estimated_protein_g: float | None = None,
+    estimated_carbs_g: float | None = None,
+    estimated_fat_g: float | None = None,
+) -> NutritionInfo:
     """
     Calculate nutrition for a specific food and amount.
-    Uses the food_database for lookup.
+    Prioritizes LLM estimation if available, otherwise checks FOOD_DB.
     """
+    if estimated_calories is not None and estimated_calories > 0:
+        return NutritionInfo(
+            calories=round(float(estimated_calories), 1),
+            protein_g=round(float(estimated_protein_g or 0.0), 1),
+            carbs_g=round(float(estimated_carbs_g or 0.0), 1),
+            fat_g=round(float(estimated_fat_g or 0.0), 1),
+        )
+
     from nutrition.food_database import FOOD_DB
 
     key = food_name.lower().strip()

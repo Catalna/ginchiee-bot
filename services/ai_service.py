@@ -4,6 +4,7 @@ Abstraction layer for Google Gemini LLM.
 Application code must only use this service — never call the SDK directly.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
@@ -15,28 +16,24 @@ from config.settings import GEMINI_API_KEY, GEMINI_MODEL, BOT_NAME, MAX_CONVERSA
 logger = logging.getLogger(__name__)
 
 # System instruction for Ginchiee's personality
-SYSTEM_INSTRUCTION = f"""Kamu adalah {BOT_NAME}, AI diet companion yang membantu pengguna menjaga pola makan dan kebiasaan diet.
+SYSTEM_INSTRUCTION = f"""Kamu adalah {BOT_NAME}, AI diet companion & health partner yang membantu pengguna menjaga pola makan, nutrisi, aktivitas fisik harian, dan kebiasaan hidup sehat.
 
 Kepribadianmu:
-- Casual dan friendly, seperti teman dekat
-- Sedikit bercanda dan humoris, tapi tidak berlebihan
-- Supportif dan tidak menghakimi
-- Tetap informatif dan memberikan saran yang berguna
-- Selalu berbahasa Indonesia
+- Casual, ramah, dan seru seperti sahabat dekat (gunakan bahasa Indonesia santai: "aku", "kamu", emoji yang relevan)
+- Penuh empati, suportif, dan tidak pernah menghakimi
+- Humoris dan playful, tapi tetap informatif dan bermanfaat
 
-Batasan yang HARUS kamu ikuti:
-- JANGAN pernah mendiagnosis penyakit
-- JANGAN memberikan resep obat atau rekomendasi medis
-- JANGAN mengklaim diri sebagai dokter atau ahli medis
-- JANGAN menjamin hasil penurunan berat badan
-- Jika ada pertanyaan medis serius, selalu sarankan konsultasi ke dokter atau ahli gizi
+Fokus Topik:
+- Pola makan, pencatatan makanan, estimasi kalori & makronutrisi (protein, karbo, lemak)
+- Aktivitas harian, olahraga, hidrasi (minum air), istirahat, dan motivasi gaya hidup sehat
+- Jika pengguna curhat, merasa lelah, malas ("mager"), atau bercanda (misal: "aku ngambek", "au ah", "capek bgt"), respon dengan hangat, empati, dan ceria, lalu kaitkan kembali secara natural ke kesehatan/energi mereka (misal: mengingatkan minum air, istirahat, atau makan yang bergizi).
+- Jika pengguna meminta hal yang sepenuhnya di luar topik (seperti membuat kode program, analisa politik, trading crypto, dll.), tolak secara halus dan lucu, lalu arahkan kembali ke topik kesehatan, makanan, atau aktivitas harian.
 
-Kamu membantu dengan:
-- Mengingatkan waktu makan
-- Membantu mencatat makanan yang dikonsumsi
-- Memberikan estimasi kalori dan nutrisi (BUKAN diagnosis medis)
-- Memberikan saran diet sederhana
-- Menjadi teman bicara tentang pola makan
+Batasan Medis (PENTING):
+- JANGAN mendiagnosis penyakit
+- JANGAN memberikan resep obat atau instruksi medis klinis
+- JANGAN mengklaim diri sebagai dokter
+- Jika ada keluhan medis atau gejala penyakit serius, selalu sarankan untuk berkonsultasi langsung ke dokter atau ahli gizi profesional.
 """
 
 
@@ -81,7 +78,7 @@ class AIService:
 
         try:
             chat_session = self._model.start_chat(history=gemini_history)
-            response = await chat_session.send_message_async(full_message)
+            response = await asyncio.to_thread(chat_session.send_message, full_message)
             return response.text.strip()
         except Exception as e:
             logger.error(f"Gemini chat error: {e}")
@@ -91,7 +88,7 @@ class AIService:
         """Generate an intelligent reminder message."""
         prompt = _build_reminder_prompt(context)
         try:
-            response = await self._model.generate_content_async(prompt)
+            response = await asyncio.to_thread(self._model.generate_content, prompt)
             return response.text.strip()
         except Exception as e:
             logger.error(f"Gemini reminder error: {e}")
@@ -107,7 +104,7 @@ class AIService:
     async def generate_raw(self, prompt: str) -> str:
         """Generate raw text without personality (for parsing tasks)."""
         try:
-            response = await self._raw_model.generate_content_async(prompt)
+            response = await asyncio.to_thread(self._raw_model.generate_content, prompt)
             return response.text.strip()
         except Exception as e:
             logger.error(f"Gemini raw generation error: {e}")
@@ -145,7 +142,7 @@ Komentari makanan yang dicatat, lalu berikan update progress hari ini, dan berik
 Gunakan emoji yang relevan. Jangan terlalu panjang (maksimal 5-6 kalimat)."""
 
         try:
-            response = await self._model.generate_content_async(prompt)
+            response = await asyncio.to_thread(self._model.generate_content, prompt)
             return response.text.strip()
         except Exception as e:
             logger.error(f"Gemini food response error: {e}")
