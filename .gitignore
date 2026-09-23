@@ -35,3 +35,10 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets & Credentials
+*client_secret*.json
+oauth_client_secrets.json
+token*.json
+credentials.json
+

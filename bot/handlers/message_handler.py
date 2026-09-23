@@ -40,10 +40,24 @@ FOOD_LOG_KEYWORDS = [
 ]
 
 
+CALENDAR_KEYWORDS = [
+    "jadwal", "agenda", "kalender", "calendar",
+    "ingetin besok", "ingetin lusa", "ingetin nanti", "ingetin jam", "ingatkan",
+    "jadwalkan", "catat jadwal", "bikin jadwal", "ada acara apa", "ada jadwal apa",
+    "jadwal hari ini", "agenda hari ini", "jadwal besok", "agenda besok", "jadwal lusa",
+]
+
+
 def _looks_like_food_log(text: str) -> bool:
     """Heuristic: does this message describe eating something?"""
     text_lower = text.lower()
     return any(kw in text_lower for kw in FOOD_LOG_KEYWORDS)
+
+
+def _looks_like_calendar_intent(text: str) -> bool:
+    """Heuristic: does this message mention scheduling or viewing agenda?"""
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in CALENDAR_KEYWORDS)
 
 
 async def _build_chat_context(user_id: int) -> dict:
@@ -90,18 +104,111 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     ai_service = context.bot_data["ai_service"]
 
-    # Typing indicator
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id, action="typing"
-    )
+    # Typing indicator (silent fail if network is slow/timeout)
+    try:
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
+    except Exception as e:
+        logger.debug(f"Failed to send typing chat action: {e}")
 
-    # Auto-detect food logging intent
+    # 1. Auto-detect food logging intent
     if _looks_like_food_log(text):
         await _handle_possible_food_log(update, context, user_id, text, ai_service)
         return
 
-    # General AI conversation
+    # 2. Auto-detect calendar / scheduling intent
+    if _looks_like_calendar_intent(text):
+        handled = await _handle_possible_calendar(update, context, user_id, text, ai_service)
+        if handled:
+            return
+
+    # 3. General AI conversation
     await _handle_general_chat(update, context, user_id, text, ai_service)
+
+
+async def _handle_possible_calendar(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str, ai_service
+) -> bool:
+    """Handle natural language calendar scheduling or viewing."""
+    from services.calendar_service import (
+        parse_calendar_intent_from_llm,
+        add_calendar_event,
+        is_user_calendar_connected,
+    )
+    from bot.handlers.calendar_handler import agenda_command
+
+    parsed = await parse_calendar_intent_from_llm(text, ai_service)
+    if not parsed:
+        return False
+
+    action = parsed.get("action")
+
+    if action == "view_agenda":
+        await agenda_command(update, context)
+        return True
+
+    if action == "create_event":
+        if not await is_user_calendar_connected(user_id):
+            await update.message.reply_text(
+                "📅 *Google Calendar Belum Terhubung*\n\n"
+                "Hubungkan Google Calendar kamu dulu untuk bisa buat jadwal otomatis!\n\n"
+                "Ketik /connectcalendar — prosesnya cepat dan mudah 🌸",
+                parse_mode="Markdown",
+            )
+            return True
+
+        summary = parsed.get("summary", "Acara Baru")
+        start_iso = parsed.get("start_iso")
+        end_iso = parsed.get("end_iso")
+        desc = parsed.get("description", "")
+        loc = parsed.get("location", "")
+
+        if not start_iso:
+            return False
+
+        try:
+            await add_calendar_event(
+                user_id=user_id,
+                summary=summary,
+                start_time_iso=start_iso,
+                end_time_iso=end_iso,
+                description=desc,
+                location=loc,
+            )
+
+            # Format start time for display
+            from config.settings import APP_TIMEZONE
+            import pytz
+            from datetime import datetime
+            tz = pytz.timezone(APP_TIMEZONE)
+            dt = datetime.fromisoformat(start_iso).astimezone(tz)
+            time_display = dt.strftime("%A, %d %B %Y • Jam %H:%M WIB")
+
+            reply_msg = (
+                f"✅ *Siap, sudah aku catat di Google Calendar!*\n\n"
+                f"📌 *Acara:* {summary}\n"
+                f"🕒 *Waktu:* {time_display}\n"
+            )
+            if loc:
+                reply_msg += f"📍 *Lokasi:* {loc}\n"
+
+            reply_msg += "\n🔔 _Notifikasi pengingat kalender sudah diaktifkan!_"
+
+            await update.message.reply_text(reply_msg, parse_mode="Markdown")
+            await save_conversation(user_id, "user", text)
+            await save_conversation(user_id, "model", reply_msg)
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to create calendar event for user {user_id}: {e}")
+            await update.message.reply_text(
+                "Waduh, gagal memasukkan acara ke Google Calendar 😅\n"
+                "Coba lagi nanti ya! Kalau terus bermasalah, coba /connectcalendar ulang.",
+            )
+            return True
+
+    return False
 
 
 async def _handle_possible_food_log(
@@ -176,3 +283,4 @@ def build_message_handlers():
             handle_message,
         )
     ]
+

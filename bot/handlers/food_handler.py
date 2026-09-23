@@ -36,7 +36,10 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Typing indicator
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except Exception as e:
+        logger.debug(f"Failed to send typing chat action: {e}")
 
     # Parse and log food
     logged_items = await log_food_from_text(

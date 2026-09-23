@@ -33,7 +33,10 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except Exception as e:
+        logger.debug(f"Failed to send typing chat action: {e}")
 
     progress = await get_daily_progress(user_id)
     food_logs = await get_today_food_logs(user_id)
