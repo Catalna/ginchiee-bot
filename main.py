@@ -13,8 +13,11 @@ Startup sequence:
 
 import asyncio
 import logging
+import os
 import sys
+import threading
 import warnings
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Suppress known non-critical library warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="google.api_core")
@@ -34,6 +37,30 @@ from database.connection import init_db, close_db
 from database.migrations import run_migrations
 from services.ai_service import AIService
 from services.scheduler_service import start_scheduler, stop_scheduler
+
+
+# ── Health Check HTTP Server for Cloud Hosting (HF Spaces / Render) ───────────
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write("Ginchiee Bot is running 24/7! 🌸\n".encode("utf-8"))
+
+    def log_message(self, format, *args):
+        pass  # Suppress health check access logs
+
+
+def start_health_server(port: int = 7860) -> None:
+    """Run lightweight HTTP server in a background daemon thread."""
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logging.getLogger(__name__).info(f"Health check HTTP server started on port {port}")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Could not start health check server: {e}")
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 from bot.conversations.onboarding import build_onboarding_conversation
@@ -123,6 +150,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main() -> None:
     logger.info("Starting Ginchiee Bot...")
+
+    # Start health check server for cloud platforms (Hugging Face / Render / Koyeb)
+    port = int(os.getenv("PORT", "7860"))
+    start_health_server(port)
 
     request = HTTPXRequest(
         connect_timeout=20.0,

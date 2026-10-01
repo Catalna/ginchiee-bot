@@ -1,3 +1,13 @@
+---
+title: Ginchiee Bot
+emoji: 🌸
+colorFrom: pink
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 🍎 Ginchiee — AI Diet Companion Bot
 
 Bot Telegram yang membantu kamu menjaga pola makan melalui reminder cerdas, food logging, estimasi nutrisi, dan percakapan natural dengan AI.
