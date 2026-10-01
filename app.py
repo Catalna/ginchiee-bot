@@ -14,7 +14,7 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
-from main import run_bot_async
+from main import build_app
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -27,9 +27,12 @@ logger = logging.getLogger("app")
 
 # ── Telegram Bot Worker ────────────────────────────────────────────────────────
 def start_bot_worker():
-    logger.info("Starting Telegram bot async loop in worker thread...")
+    logger.info("Starting Telegram bot worker thread...")
     try:
-        asyncio.run(run_bot_async())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        app = build_app()
+        app.run_polling(stop_signals=None, drop_pending_updates=False)
     except Exception as e:
         logger.error(f"FATAL: Telegram bot crashed: {e}", exc_info=True)
 
