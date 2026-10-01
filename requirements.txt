@@ -8,4 +8,5 @@ APScheduler==3.10.4
 python-dotenv==1.0.1
 pytz==2024.2
 Pillow>=10.0.0
+gradio==6.29.0
 spaces==0.51.3
