@@ -163,6 +163,7 @@ def build_schedule_handlers():
         },
         fallbacks=[CommandHandler("cancel", cancel_schedule)],
         allow_reentry=True,
+        per_message=False,
     )
     return [
         conv,

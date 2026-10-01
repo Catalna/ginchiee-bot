@@ -4,7 +4,7 @@ Food logging, daily nutrition tracking, and progress calculation.
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from database.connection import get_db
@@ -112,6 +112,31 @@ async def log_food_from_text(
     if not items:
         return []
     return await log_food_items(user_id, items, meal_type)
+
+
+async def log_food_from_photo_items(
+    user_id: int,
+    items_data: list[dict],
+    meal_type: Optional[str] = None,
+) -> list[dict]:
+    """Convert parsed photo food items dicts to ParsedFoodItem and log them."""
+    if not items_data:
+        return []
+    parsed_items = []
+    for d in items_data:
+        parsed_items.append(
+            ParsedFoodItem(
+                food_name=str(d.get("food", "Makanan")).strip(),
+                amount_g=float(d.get("amount_g", 100)),
+                unit=str(d.get("unit", "porsi")),
+                amount_raw=f"{d.get('amount_g', 100)}g",
+                calories=float(d.get("calories", 0)),
+                protein_g=float(d.get("protein_g", 0)),
+                carbs_g=float(d.get("carbs_g", 0)),
+                fat_g=float(d.get("fat_g", 0)),
+            )
+        )
+    return await log_food_items(user_id, parsed_items, meal_type)
 
 
 # ── Daily Nutrition ───────────────────────────────────────────────────────────
@@ -224,4 +249,112 @@ async def get_daily_progress(user_id: int) -> Optional[dict]:
             "carbs_g":   pct(consumed["carbs_g"],   target.carbs_g),
             "fat_g":     pct(consumed["fat_g"],     target.fat_g),
         },
+    }
+
+
+# ── Nutrition History & Adaptive Target ───────────────────────────────────────
+
+async def get_nutrition_history(user_id: int, days: int = 7) -> list[dict]:
+    """
+    Return daily nutrition totals for the past N days (excluding today).
+    Each row: {date, calories, protein_g, carbs_g, fat_g, logged_entries}.
+    Only returns days where at least 1 food entry was logged.
+    """
+    db = await get_db()
+    today = date.today()
+    since = (today - timedelta(days=days)).isoformat()
+    today_str = today.isoformat()
+
+    async with db.execute(
+        """
+        SELECT
+            date,
+            ROUND(SUM(calories), 1)  AS calories,
+            ROUND(SUM(protein_g), 1) AS protein_g,
+            ROUND(SUM(carbs_g),   1) AS carbs_g,
+            ROUND(SUM(fat_g),     1) AS fat_g,
+            COUNT(*)                  AS logged_entries
+        FROM food_logs
+        WHERE user_id = ?
+          AND date >= ?
+          AND date < ?
+        GROUP BY date
+        ORDER BY date DESC
+        """,
+        (user_id, since, today_str),
+    ) as cursor:
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_adaptive_target(user_id: int) -> Optional[dict]:
+    """
+    Calculate an adaptive calorie & macro target for today based on recent eating trends.
+
+    Logic:
+      - Start from the base TDEE target (from user profile).
+      - Look at the last 3 days with meaningful logging (>= 2 entries).
+      - Compute average surplus/deficit vs. base target.
+      - Adjust today's target to gently compensate (50% of the trend, capped at ±200 kcal):
+          * Consistently overate  -> slightly reduce today's target.
+          * Consistently underate -> slightly increase today's target.
+      - Protein/carbs/fat are recalculated proportionally (30/40/30 split).
+
+    Returns None if user has no diet profile.
+    Returns dict with keys:
+        calories, protein_g, carbs_g, fat_g,
+        base_calories, adjustment_kcal, trend_label, days_analysed.
+    """
+    base_target = await get_nutrition_target(user_id)
+    if not base_target:
+        return None
+
+    history = await get_nutrition_history(user_id, days=7)
+    # Only count days with at least 2 entries (more representative)
+    valid_days = [h for h in history if h["logged_entries"] >= 2]
+
+    if len(valid_days) < 2:
+        # Not enough history — return base target with neutral metadata
+        return {
+            "calories":        base_target.calories,
+            "protein_g":       base_target.protein_g,
+            "carbs_g":         base_target.carbs_g,
+            "fat_g":           base_target.fat_g,
+            "base_calories":   base_target.calories,
+            "adjustment_kcal": 0,
+            "trend_label":     "belum cukup data",
+            "days_analysed":   0,
+        }
+
+    # Use the 3 most recent valid days
+    recent = valid_days[:3]
+    avg_consumed = sum(d["calories"] for d in recent) / len(recent)
+    avg_surplus = avg_consumed - base_target.calories  # positive = overate
+
+    # Clamp compensation to ±200 kcal, apply 50% of the trend
+    raw_adjustment = -avg_surplus * 0.5
+    adjustment = max(-200.0, min(200.0, raw_adjustment))
+    adjusted_calories = max(1200.0, base_target.calories + adjustment)
+
+    # Recalculate macros proportionally (same 30/40/30 split as base)
+    protein_g = (adjusted_calories * 0.30) / 4
+    carbs_g   = (adjusted_calories * 0.40) / 4
+    fat_g     = (adjusted_calories * 0.30) / 9
+
+    if avg_surplus > 50:
+        trend_label = "kelebihan kalori"
+    elif avg_surplus < -50:
+        trend_label = "kekurangan kalori"
+    else:
+        trend_label = "seimbang"
+
+    return {
+        "calories":        round(adjusted_calories),
+        "protein_g":       round(protein_g),
+        "carbs_g":         round(carbs_g),
+        "fat_g":           round(fat_g),
+        "base_calories":   base_target.calories,
+        "adjustment_kcal": round(adjustment),
+        "trend_label":     trend_label,
+        "days_analysed":   len(recent),
     }

@@ -298,4 +298,5 @@ def build_onboarding_conversation() -> ConversationHandler:
         },
         fallbacks=[CommandHandler("cancel", cancel_onboarding)],
         allow_reentry=True,
+        per_message=False,
     )

@@ -5,35 +5,47 @@ Application code must only use this service — never call the SDK directly.
 """
 
 import asyncio
+import io
+import json
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
 import google.generativeai as genai
+from PIL import Image
 
-from config.settings import GEMINI_API_KEY, GEMINI_MODEL, BOT_NAME, MAX_CONVERSATION_HISTORY
+from config.settings import GEMINI_API_KEY, GEMINI_MODEL, BOT_NAME, MAX_CONVERSATION_HISTORY, APP_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
 # System instruction for Ginchiee's personality
-SYSTEM_INSTRUCTION = f"""Kamu adalah {BOT_NAME}, AI diet companion & health partner yang membantu pengguna menjaga pola makan, nutrisi, aktivitas fisik harian, dan kebiasaan hidup sehat.
+SYSTEM_INSTRUCTION = f"""Kamu adalah {BOT_NAME}, teman dekat sekaligus health companion yang care sama pengguna.
 
 Kepribadianmu:
-- Casual, ramah, dan seru seperti sahabat dekat (gunakan bahasa Indonesia santai: "aku", "kamu", emoji yang relevan)
-- Penuh empati, suportif, dan tidak pernah menghakimi
-- Humoris dan playful, tapi tetap informatif dan bermanfaat
+- Casual, hangat, dan seru seperti sahabat terbaik (pakai bahasa Indonesia santai: "aku", "kamu", emoji yang pas)
+- Penuh empati dan tidak pernah menghakimi pilihan makan atau gaya hidup pengguna
+- Humoris, playful, dan bisa dengerin curhatan tanpa harus selalu balik ke topik diet
+- Bisa ngobrol tentang hal sehari-hari, tidak harus selalu soal makanan dan kalori
 
-Fokus Topik:
-- Pola makan, pencatatan makanan, estimasi kalori & makronutrisi (protein, karbo, lemak)
-- Aktivitas harian, olahraga, hidrasi (minum air), istirahat, dan motivasi gaya hidup sehat
-- Jika pengguna curhat, merasa lelah, malas ("mager"), atau bercanda (misal: "aku ngambek", "au ah", "capek bgt"), respon dengan hangat, empati, dan ceria, lalu kaitkan kembali secara natural ke kesehatan/energi mereka (misal: mengingatkan minum air, istirahat, atau makan yang bergizi).
-- Jika pengguna meminta hal yang sepenuhnya di luar topik (seperti membuat kode program, analisa politik, trading crypto, dll.), tolak secara halus dan lucu, lalu arahkan kembali ke topik kesehatan, makanan, atau aktivitas harian.
+Soal Pola Makan — PENTING:
+- Kamu TIDAK strict dan TIDAK ceramah soal pola makan. Kalau pengguna makan sesuatu yang kurang sehat, tanggapi dengan santai dan supportif.
+- Sesekali saja (tidak setiap kali) berikan gentle reminder atau soft warning jika pola makan terlihat sangat tidak seimbang — sampaikan dengan cara yang ringan, bukan menghakimi.
+- Fokus pada semangat dan konsistensi, bukan kesempurnaan. Satu hari makan tidak sehat bukan masalah besar.
+- Kalau pengguna sudah tahu makanannya tidak sehat dan tetap mau makan, hormati pilihannya. Cukup catat dan lanjutkan.
+
+Topik yang bisa dibahas:
+- Pola makan, pencatatan makanan, estimasi kalori & makronutrisi
+- Kegiatan & jadwal harian yang sudah disimpan pengguna
+- Aktivitas, olahraga, hidrasi, istirahat, dan motivasi hidup sehat
+- Curhat soal hari-hari, perasaan, hal sehari-hari — respond dengan hangat dan empati
+- Jika pengguna minta hal benar-benar di luar topik (kode program, politik, crypto), tolak dengan lucu dan ringan
 
 Batasan Medis (PENTING):
 - JANGAN mendiagnosis penyakit
 - JANGAN memberikan resep obat atau instruksi medis klinis
 - JANGAN mengklaim diri sebagai dokter
-- Jika ada keluhan medis atau gejala penyakit serius, selalu sarankan untuk berkonsultasi langsung ke dokter atau ahli gizi profesional.
+- Untuk keluhan medis serius, sarankan konsultasi ke dokter atau ahli gizi profesional
 """
 
 
@@ -85,7 +97,7 @@ class AIService:
             return "Maaf, aku lagi ada masalah teknis. Coba lagi ya! 🙏"
 
     async def generate_reminder(self, context: dict) -> str:
-        """Generate an intelligent reminder message."""
+        """Generate an intelligent meal reminder message."""
         prompt = _build_reminder_prompt(context)
         try:
             response = await asyncio.to_thread(self._model.generate_content, prompt)
@@ -101,6 +113,18 @@ class AIService:
             meal = meal_labels.get(context.get("meal_type", ""), "Makan")
             return f"🍽️ {meal} time! Jangan lupa makan ya 😊"
 
+    async def generate_activity_reminder(self, context: dict) -> str:
+        """Generate a reminder message for a user activity/event."""
+        prompt = _build_activity_reminder_prompt(context)
+        try:
+            response = await asyncio.to_thread(self._model.generate_content, prompt)
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Gemini activity reminder error: {e}")
+            title = context.get("title", "kegiatan")
+            remind_mins = context.get("remind_mins", 30)
+            return f"⏰ Hei! {remind_mins} menit lagi kamu ada *{title}* lho! Jangan sampai kelewatan ya~ 🌸"
+
     async def generate_raw(self, prompt: str) -> str:
         """Generate raw text without personality (for parsing tasks)."""
         try:
@@ -115,8 +139,10 @@ class AIService:
         logged_items: list[dict],
         daily_progress: Optional[dict],
         context: Optional[dict] = None,
+        adaptive_target: Optional[dict] = None,
+        nutrition_history: Optional[list] = None,
     ) -> str:
-        """Generate response after user logs food."""
+        """Generate response after user logs food, aware of trends and adaptive target."""
         items_str = "\n".join(
             f"- {item['food_name']} {item['amount_g']}g → "
             f"{item['calories']} kcal, protein {item['protein_g']}g"
@@ -126,20 +152,48 @@ class AIService:
         progress_str = ""
         if daily_progress:
             p = daily_progress
+            # Use adaptive target calories if available
+            target_cal = (
+                adaptive_target["calories"]
+                if adaptive_target and adaptive_target.get("days_analysed", 0) >= 2
+                else p["target"]["calories"]
+            )
             progress_str = f"""
 Progress hari ini:
-- Kalori: {p['consumed']['calories']}/{p['target']['calories']} kcal ({p['percentage']['calories']}%)
+- Kalori: {p['consumed']['calories']}/{target_cal} kcal ({p['percentage']['calories']}%)
 - Protein: {p['consumed']['protein_g']}/{p['target']['protein_g']}g ({p['percentage']['protein_g']}%)
 - Karbs: {p['consumed']['carbs_g']}/{p['target']['carbs_g']}g ({p['percentage']['carbs_g']}%)
 - Lemak: {p['consumed']['fat_g']}/{p['target']['fat_g']}g ({p['percentage']['fat_g']}%)"""
 
+        # Build adaptive target insight
+        adaptive_str = ""
+        if adaptive_target and adaptive_target.get("days_analysed", 0) >= 2:
+            adj = adaptive_target["adjustment_kcal"]
+            trend = adaptive_target.get("trend_label", "")
+            sign = "+" if adj >= 0 else ""
+            adaptive_str = (
+                f"\nTarget adaptif hari ini: {adaptive_target['calories']} kcal "
+                f"(penyesuaian {sign}{adj} kcal karena tren: {trend})"
+            )
+
+        # Build history snippet
+        history_str = ""
+        if nutrition_history:
+            recent = nutrition_history[:3]
+            rows = ", ".join(
+                f"{h['date']}: {h['calories']:.0f} kcal" for h in recent
+            )
+            history_str = f"\nRiwayat 3 hari terakhir: {rows}"
+
         prompt = f"""Pengguna baru saja mencatat makanan berikut:
 {items_str}
-{progress_str}
+{progress_str}{adaptive_str}{history_str}
 
-Buat response yang friendly, informatif, dan sesuai kepribadianmu. 
-Komentari makanan yang dicatat, lalu berikan update progress hari ini, dan berikan saran singkat jika perlu.
-Gunakan emoji yang relevan. Jangan terlalu panjang (maksimal 5-6 kalimat)."""
+Buat response yang friendly, informatif, dan sesuai kepribadianmu.
+- Komentari makanan yang baru dicatat.
+- Berikan update progress hari ini vs target (gunakan target adaptif jika ada).
+- Jika ada tren kelebihan/kekurangan dari histori, berikan saran porsi yang bijak dan natural (jangan kaku/ceramah).
+- Gunakan emoji yang relevan. Maksimal 5-6 kalimat."""
 
         try:
             response = await asyncio.to_thread(self._model.generate_content, prompt)
@@ -149,15 +203,108 @@ Gunakan emoji yang relevan. Jangan terlalu panjang (maksimal 5-6 kalimat)."""
             total_cal = sum(i["calories"] for i in logged_items)
             return f"✅ Makanan tercatat! Total {total_cal:.0f} kcal. Mantap! 💪"
 
+    async def analyze_image(
+        self,
+        image_bytes: bytes,
+        caption: str = "",
+        context: Optional[dict] = None,
+    ) -> dict:
+        """
+        Analyze an image sent by user using Gemini Multimodal.
+        Classifies as 'FOOD', 'ACTIVITY', or 'GENERAL'.
+        """
+        now = datetime.now()
+        now_str = now.strftime('%Y-%m-%d %H:%M')
+        
+        context_str = _build_context_block(context) if context else ""
+        caption_info = f'\nCaption dari pengguna: "{caption}"' if caption else ""
+        
+        prompt = f"""Kamu adalah {BOT_NAME}, sahabat dekat sekaligus health companion yang cerdas.
+Waktu saat ini: {now_str} WIB.
+{context_str}
+{caption_info}
+
+Tugas:
+Lihat dan analisa gambar yang dikirim pengguna ini secara teliti.
+Tentukan kategori gambar tersebut dan kembalikan HANYA format JSON valid murni (tanpa markdown codeblock, tanpa teks lain).
+
+Kategori yang mungkin:
+1. "FOOD" — Jika gambar menampilkan makanan, minuman, hidangan, camilan, buah, sayur, menu restoran, atau struk makan.
+   Format JSON:
+   {{
+     "category": "FOOD",
+     "items": [
+       {{
+         "food": "nama makanan jelas (misal: Nasi putih / Ayam bakar / Es teh manis)",
+         "amount_g": 150,
+         "unit": "porsi",
+         "calories": 250,
+         "protein_g": 25.0,
+         "carbs_g": 5.0,
+         "fat_g": 12.0
+       }}
+     ],
+     "comment": "komentar pendek hangat, santai & suportif khas {BOT_NAME} tentang makanan ini (1-2 kalimat)"
+   }}
+
+2. "ACTIVITY" — Jika gambar berupa poster acara, flyer event, tiket, screenshot jadwal/kalender, undangan, atau pengumuman kegiatan.
+   Format JSON:
+   {{
+     "category": "ACTIVITY",
+     "title": "judul singkat kegiatan/acara",
+     "description": "deskripsi atau lokasi jika ada",
+     "activity_dt": "YYYY-MM-DDTHH:MM:SS",
+     "remind_mins": 30,
+     "comment": "komentar singkat {BOT_NAME} yang mengajak/mengingatkan acara ini"
+   }}
+
+3. "GENERAL" — Jika gambar bukan makanan ataupun poster acara (misal: pemandangan, selfie, kucing/hewan, barang, meme, dll).
+   Format JSON:
+   {{
+     "category": "GENERAL",
+     "comment": "tanggapan ramah, playful, dan natural khas sahabat baik tentang gambar ini (2-3 kalimat)"
+   }}
+"""
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            response = await asyncio.to_thread(self._raw_model.generate_content, [img, prompt])
+            raw = response.text.strip()
+            
+            # Clean markdown codeblocks if present
+            clean_raw = re.sub(r"^```[a-zA-Z]*\n", "", raw.strip(), flags=re.MULTILINE)
+            clean_raw = re.sub(r"```$", "", clean_raw.strip(), flags=re.MULTILINE)
+            
+            json_match = re.search(r'\{.*\}', clean_raw, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                return data
+        except Exception as e:
+            logger.error(f"Error analyzing image with Gemini: {e}")
+
+        return {
+            "category": "GENERAL",
+            "comment": "Wah fotonya seru! Tapi aku agak kesulitan mengenali detailnya nih~ 😅"
+        }
+
 
 # ── Helper Functions ──────────────────────────────────────────────────────────
 
 def _build_context_block(context: dict) -> str:
     """Build a context string to prepend to user messages."""
+    import pytz
     parts = []
 
-    now = datetime.now()
-    parts.append(f"[Context - {now.strftime('%A, %d %B %Y %H:%M')}]")
+    # Always use the app timezone (Asia/Jakarta / WIB) so AI knows the real local time
+    _tz = pytz.timezone(APP_TIMEZONE)
+    now = datetime.now(_tz)
+    day_names = {
+        "Monday": "Senin", "Tuesday": "Selasa", "Wednesday": "Rabu",
+        "Thursday": "Kamis", "Friday": "Jumat", "Saturday": "Sabtu", "Sunday": "Minggu",
+    }
+    day_id = day_names.get(now.strftime("%A"), now.strftime("%A"))
+    parts.append(
+        f"[Context - {day_id}, {now.strftime('%d %B %Y %H:%M')} WIB]"
+    )
 
     if profile := context.get("profile"):
         parts.append(
@@ -197,6 +344,35 @@ def _build_context_block(context: dict) -> str:
         if sched_str:
             parts.append(f"Jadwal makan: {sched_str}")
 
+    if activities := context.get("upcoming_activities"):
+        act_str = "; ".join(
+            f"{a['title']} ({a['activity_dt'][:16].replace('T', ' ')})" for a in activities[:5]
+        )
+        if act_str:
+            parts.append(f"Kegiatan mendatang: {act_str}")
+
+    if adaptive := context.get("adaptive_target"):
+        days = adaptive.get("days_analysed", 0)
+        trend = adaptive.get("trend_label", "")
+        adj = adaptive.get("adjustment_kcal", 0)
+        if days >= 2:
+            sign = "+" if adj >= 0 else ""
+            parts.append(
+                f"Target adaptif hari ini: {adaptive['calories']} kcal "
+                f"(basis {adaptive['base_calories']} kcal, penyesuaian {sign}{adj} kcal) "
+                f"— tren {days} hari terakhir: {trend}"
+            )
+
+    if history := context.get("nutrition_history"):
+        hist_lines = []
+        for h in history[:5]:  # show last 5 days
+            hist_lines.append(
+                f"{h['date']}: {h['calories']} kcal "
+                f"(P:{h['protein_g']}g C:{h['carbs_g']}g L:{h['fat_g']}g)"
+            )
+        if hist_lines:
+            parts.append("Riwayat makan 5 hari terakhir:\n" + "\n".join(hist_lines))
+
     return "\n".join(parts)
 
 
@@ -228,5 +404,31 @@ Buat pesan reminder yang:
 - Sebutkan info nutrisi yang relevan
 - Gunakan emoji yang sesuai
 - Berikan satu saran singkat terkait makanan yang bisa dipilih
+
+Jangan mulai dengan "Halo" atau menyebut nama pengguna di awal."""
+
+
+def _build_activity_reminder_prompt(context: dict) -> str:
+    title = context.get("title", "kegiatan")
+    description = context.get("description", "")
+    activity_dt = context.get("activity_dt", "")
+    remind_mins = context.get("remind_mins", 30)
+    user_name = context.get("user_name", "kamu")
+
+    desc_info = f"\nDeskripsi: {description}" if description else ""
+    time_str = activity_dt[:16].replace("T", " ") if activity_dt else ""
+
+    return f"""Buat pesan pengingat kegiatan untuk {user_name}.
+
+Kegiatan: {title}{desc_info}
+Waktu: {time_str}
+Pengingat: {remind_mins} menit sebelum kegiatan
+
+Buat pesan pengingat yang:
+- Singkat dan energik (2-3 kalimat)
+- Hangat dan supportif seperti teman baik
+- Sebutkan nama kegiatannya
+- Gunakan emoji yang sesuai
+- Tidak formal, santai aja
 
 Jangan mulai dengan "Halo" atau menyebut nama pengguna di awal."""

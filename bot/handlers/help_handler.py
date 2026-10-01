@@ -10,7 +10,7 @@ from telegram.ext import CommandHandler, ContextTypes
 logger = logging.getLogger(__name__)
 
 HELP_TEXT = """
-🤖 *Ginchiee — AI Diet Companion*
+🤖 *Ginchiee — AI Companion & Health Partner*
 
 *📋 Perintah Tersedia:*
 
@@ -22,19 +22,34 @@ HELP_TEXT = """
 /food [makanan] — Alias untuk /log
 /schedule — Atur jadwal makan & reminder
 /reminders — Lihat jadwal makanmu
+/agenda — Lihat kegiatan & jadwal kamu
+/jadwal — Alias untuk /agenda
+/tambahkegiatan [deskripsi] — Tambah kegiatan baru
+/hapuskegiatan — Hapus kegiatan yang tersimpan
 /help — Tampilkan bantuan ini
 
 *💬 Ngobrol Bebas:*
 Kamu juga bisa langsung ngobrol sama aku!
-Ceritain apa yang kamu makan, tanya soal diet, atau sekedar curhat soal pola makan~
+Ceritain apa yang kamu makan, curhat, atau minta aku ingetin kegiatan~
+
+*📸 Kirim Foto Langsung:*
+• Foto makanan → Aku langsung scan & hitung nutrisinya!
+• Foto poster / flyer acara → Aku catat ke agendamu!
+• Foto bebas → Ngobrol seru bareng aku!
 
 *📝 Contoh Log Makanan:*
+• Kirim foto makanan langsung 📸
 • `/log nasi 200g ayam 150g`
-• `/log makan siang: bakso 1 porsi`
-• `/log telur rebus 2 butir dan susu 1 gelas`
+• Atau langsung ketik: _"tadi aku makan nasi goreng"_
+
+*📅 Contoh Tambah Kegiatan:*
+• Kirim foto poster/undangan acara 📸
+• `/tambahkegiatan besok jam 9 ada rapat`
+• Atau langsung ketik: _"ingetin aku besok jam 3 sore kontrol dokter"_
 
 *💡 Tips:*
-Kamu bisa nulis natural tanpa format khusus, aku akan bantu parsing-nya!
+Aku bisa baca teks & foto natural tanpa format khusus!
+Aku juga akan ingatkan kamu sebelum kegiatan berlangsung 🔔
 
 _Ginchiee adalah AI companion, bukan dokter. Untuk masalah kesehatan serius, konsultasikan ke dokter atau ahli gizi ya!_ 🙏
 """

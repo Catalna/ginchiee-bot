@@ -1,6 +1,6 @@
 """
 services/scheduler_service.py
-APScheduler setup — checks due meal reminders every minute.
+APScheduler setup — checks due meal reminders and activity reminders every minute.
 """
 
 import logging
@@ -12,6 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from services.user_service import get_all_active_schedules
 from services.reminder_service import generate_reminder_message
+from services.activity_service import get_due_activity_reminders, mark_reminded
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +56,51 @@ async def _check_reminders(bot, ai_service) -> None:
                 await bot.send_message(chat_id=user_id, text=message)
 
         except Exception as e:
-            logger.error(f"Error processing reminder for user {user_id}: {e}")
+            logger.error(f"Error processing meal reminder for user {user_id}: {e}")
+
+
+async def _check_activity_reminders(bot, ai_service) -> None:
+    """
+    Runs every minute. Finds all due activity reminders and sends them.
+    """
+    try:
+        due = await get_due_activity_reminders()
+    except Exception as e:
+        logger.error(f"Error fetching due activity reminders: {e}")
+        return
+
+    for activity in due:
+        user_id = activity["user_id"]
+        activity_id = activity["id"]
+        try:
+            context = {
+                "title": activity["title"],
+                "description": activity.get("description", ""),
+                "activity_dt": activity["activity_dt"],
+                "remind_mins": activity["remind_mins"],
+                "user_name": activity.get("user_name", "kamu"),
+            }
+            message = await ai_service.generate_activity_reminder(context)
+            await bot.send_message(
+                chat_id=user_id,
+                text=message,
+                parse_mode="Markdown",
+            )
+            await mark_reminded(activity_id)
+            logger.info(
+                f"Sent activity reminder for '{activity['title']}' to user {user_id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error sending activity reminder id={activity_id} to user {user_id}: {e}"
+            )
 
 
 def start_scheduler(bot, ai_service) -> AsyncIOScheduler:
     """Initialize and start the APScheduler."""
     scheduler = get_scheduler()
 
-    # Run every minute at :00 seconds
+    # Meal reminder check — every minute at :00 seconds
     scheduler.add_job(
         _check_reminders,
         trigger=CronTrigger(second=0),
@@ -72,8 +110,18 @@ def start_scheduler(bot, ai_service) -> AsyncIOScheduler:
         max_instances=1,
     )
 
+    # Activity reminder check — every minute at :30 seconds (offset to avoid overlap)
+    scheduler.add_job(
+        _check_activity_reminders,
+        trigger=CronTrigger(second=30),
+        args=[bot, ai_service],
+        id="activity_reminder_check",
+        replace_existing=True,
+        max_instances=1,
+    )
+
     scheduler.start()
-    logger.info("Scheduler started — checking reminders every minute.")
+    logger.info("Scheduler started — checking meal & activity reminders every minute.")
     return scheduler
 
 
@@ -82,3 +130,4 @@ def stop_scheduler() -> None:
     if scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("Scheduler stopped.")
+

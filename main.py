@@ -14,6 +14,15 @@ Startup sequence:
 import asyncio
 import logging
 import sys
+import warnings
+
+# Suppress known non-critical library warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="google.api_core")
+try:
+    from telegram.warnings import PTBUserWarning
+    warnings.filterwarnings("ignore", category=PTBUserWarning)
+except ImportError:
+    pass
 
 from telegram import BotCommand, Update
 from telegram.error import TimedOut, NetworkError
@@ -32,8 +41,8 @@ from bot.handlers.profile_handler import build_profile_handlers
 from bot.handlers.food_handler import build_food_handlers
 from bot.handlers.today_handler import build_today_handlers
 from bot.handlers.schedule_handler import build_schedule_handlers
-from bot.handlers.calendar_handler import build_calendar_handlers
-from bot.handlers.connect_calendar_handler import build_connect_calendar_handlers
+from bot.handlers.activity_handler import build_activity_handlers
+from bot.handlers.photo_handler import build_photo_handlers
 from bot.handlers.help_handler import build_help_handlers
 from bot.handlers.message_handler import build_message_handlers
 
@@ -47,6 +56,10 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
+# Silence httpx and httpcore logs to avoid exposing Telegram bot token in request URLs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,9 +67,9 @@ logger = logging.getLogger(__name__)
 
 BOT_COMMANDS = [
     BotCommand("start",              "Mulai & setup profil"),
-    BotCommand("agenda",             "Lihat jadwal & agenda Google Calendar"),
-    BotCommand("connectcalendar",    "Hubungkan Google Calendar kamu"),
-    BotCommand("disconnectcalendar", "Putus koneksi Google Calendar"),
+    BotCommand("agenda",             "Lihat kegiatan & jadwal kamu"),
+    BotCommand("tambahkegiatan",     "Tambah kegiatan baru"),
+    BotCommand("hapuskegiatan",      "Hapus kegiatan yang tersimpan"),
     BotCommand("profile",            "Lihat profil & target nutrisimu"),
     BotCommand("setprofile",         "Perbarui profil"),
     BotCommand("today",              "Progress nutrisi hari ini"),
@@ -148,14 +161,15 @@ def main() -> None:
     for handler in build_today_handlers():
         app.add_handler(handler)
 
-    for handler in build_calendar_handlers():
-        app.add_handler(handler)
-
-    # Calendar OAuth2 connect/disconnect handlers
-    for handler in build_connect_calendar_handlers():
+    # Activity handlers (replaces Google Calendar)
+    for handler in build_activity_handlers():
         app.add_handler(handler)
 
     for handler in build_help_handlers():
+        app.add_handler(handler)
+
+    # Photo handler (multimodal vision)
+    for handler in build_photo_handlers():
         app.add_handler(handler)
 
     # 4. Free-form message handler (must be LAST)

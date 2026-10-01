@@ -76,12 +76,16 @@ CREATE TABLE IF NOT EXISTS conversations (
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
--- Google Calendar OAuth2 Tokens (per user)
-CREATE TABLE IF NOT EXISTS google_calendar_tokens (
-    user_id       INTEGER PRIMARY KEY,
-    token         TEXT    NOT NULL,   -- JSON: access_token, refresh_token, expiry, etc.
-    calendar_id   TEXT    NOT NULL DEFAULT 'primary',
-    connected_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+-- User Activities (Pengganti Google Calendar — sistem internal)
+CREATE TABLE IF NOT EXISTS user_activities (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    title        TEXT    NOT NULL,          -- Judul / nama kegiatan
+    description  TEXT,                     -- Deskripsi tambahan (opsional)
+    activity_dt  TEXT    NOT NULL,          -- ISO datetime: YYYY-MM-DDTHH:MM:SS
+    remind_mins  INTEGER NOT NULL DEFAULT 30, -- Ingatkan X menit sebelumnya
+    reminded     INTEGER NOT NULL DEFAULT 0,  -- 0 = belum, 1 = sudah diingatkan
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
@@ -90,4 +94,5 @@ CREATE INDEX IF NOT EXISTS idx_food_logs_user_date    ON food_logs(user_id, date
 CREATE INDEX IF NOT EXISTS idx_daily_nutrition_user   ON daily_nutrition(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_conversations_user     ON conversations(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_meal_schedules_user    ON meal_schedules(user_id);
-CREATE INDEX IF NOT EXISTS idx_calendar_tokens_user   ON google_calendar_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_activities_user   ON user_activities(user_id, activity_dt);
+

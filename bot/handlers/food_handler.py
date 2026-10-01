@@ -8,7 +8,12 @@ import logging
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
-from services.nutrition_service import log_food_from_text, get_daily_progress
+from services.nutrition_service import (
+    log_food_from_text,
+    get_daily_progress,
+    get_adaptive_target,
+    get_nutrition_history,
+)
 from services.user_service import has_diet_profile, user_exists
 
 logger = logging.getLogger(__name__)
@@ -57,11 +62,19 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # Get progress for AI response
-    progress = await get_daily_progress(user_id) if await has_diet_profile(user_id) else None
+    # Get progress and adaptive history for AI response
+    has_profile = await has_diet_profile(user_id)
+    progress = await get_daily_progress(user_id) if has_profile else None
+    adaptive_target = await get_adaptive_target(user_id) if has_profile else None
+    history = await get_nutrition_history(user_id, days=5) if has_profile else []
 
     # Generate AI response
-    response = await ai_service.generate_food_response(logged_items, progress)
+    response = await ai_service.generate_food_response(
+        logged_items=logged_items,
+        daily_progress=progress,
+        adaptive_target=adaptive_target,
+        nutrition_history=history,
+    )
 
     # Also add a food summary
     food_summary = "✅ *Makanan tercatat:*\n"

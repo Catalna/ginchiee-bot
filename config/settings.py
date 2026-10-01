@@ -39,12 +39,3 @@ BOT_PERSONALITY: str = "playful_supportive"
 
 WATER_TARGET_ML: int = 2500
 MAX_CONVERSATION_HISTORY: int = 10
-
-# ── Google Calendar ───────────────────────────────────────────────────────────
-
-# OAuth2 client secrets file (Desktop app type) dari Google Cloud Console
-GOOGLE_OAUTH_CLIENT_SECRETS_FILE: str = os.getenv(
-    "GOOGLE_OAUTH_CLIENT_SECRETS_FILE", "config/oauth_client_secrets.json"
-)
-# Default calendar ID untuk operasi kalender user (biasanya "primary")
-GOOGLE_CALENDAR_ID: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
