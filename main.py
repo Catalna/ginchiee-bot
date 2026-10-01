@@ -112,19 +112,31 @@ BOT_COMMANDS = [
 
 async def post_init(application: Application) -> None:
     """Runs after application initializes, before polling starts."""
-    # Init database
-    await init_db()
-    await run_migrations()
-    logger.info("Database initialized.")
+    try:
+        # Init database
+        logger.info("Initializing database...")
+        await init_db()
+        await run_migrations()
+        logger.info("Database initialized.")
+    except Exception as e:
+        logger.critical(f"FATAL: Database initialization failed: {e}", exc_info=True)
+        raise
 
-    # Init AI service
-    ai_service = AIService()
-    application.bot_data["ai_service"] = ai_service
-    logger.info("AI service initialized.")
+    try:
+        # Init AI service
+        ai_service = AIService()
+        application.bot_data["ai_service"] = ai_service
+        logger.info("AI service initialized.")
+    except Exception as e:
+        logger.critical(f"FATAL: AI service initialization failed: {e}", exc_info=True)
+        raise
 
-    # Set bot command menu
-    await application.bot.set_my_commands(BOT_COMMANDS)
-    logger.info("Bot commands menu set.")
+    try:
+        # Set bot command menu
+        await application.bot.set_my_commands(BOT_COMMANDS)
+        logger.info("Bot commands menu set.")
+    except Exception as e:
+        logger.warning(f"Could not set bot commands: {e}")
 
     # Start scheduler
     start_scheduler(bot=application.bot, ai_service=ai_service)

@@ -23,6 +23,10 @@ async def init_db() -> aiosqlite.Connection:
     """Initialize the database connection and run migrations."""
     global _db
 
+    # Already initialized — skip
+    if _db is not None:
+        return _db
+
     # Ensure data directory exists
     db_path = Path(DATABASE_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
