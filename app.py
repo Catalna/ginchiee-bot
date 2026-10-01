@@ -6,9 +6,11 @@ Runs Gradio status dashboard and background Telegram bot worker.
 
 import os
 import sys
+import time
 import asyncio
 import logging
 import threading
+from datetime import datetime
 import gradio as gr
 from main import run_bot_async
 
@@ -23,9 +25,16 @@ def start_bot_worker():
         logger.error(f"FATAL: Telegram bot async loop crashed: {e}", exc_info=True)
 
 
-# Start Telegram bot in background thread
+# Start Telegram bot in background daemon thread
 bot_thread = threading.Thread(target=start_bot_worker, daemon=True)
 bot_thread.start()
+
+
+def get_live_status():
+    is_alive = bot_thread.is_alive()
+    status = "🟢 AKTIF (Polling Telegram 24/7)" if is_alive else "🔴 Offline"
+    return f"Status: {status} | Waktu Server: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
 
 with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
     with gr.Column():
@@ -34,14 +43,22 @@ with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
             # 🌸 Ginchiee Bot
             ### *AI Health & Diet Companion*
             
-            <div style="margin: 15px 0;">
-                <span style="background:#22c55e;color:white;padding:4px 14px;border-radius:9999px;font-weight:bold;font-size:14px;">● Online 24/7</span>
-            </div>
-            
             Ginchiee aktif di Telegram untuk membantu kamu mencatat nutrisi harian, mengelola jadwal kegiatan, dan memberikan rekomendasi porsi adaptif secara pintar! ✨
-            
+            """
+        )
+
+        status_display = gr.Textbox(
+            value=get_live_status,
+            label="Live Bot Status",
+            interactive=False,
+        )
+
+        refresh_btn = gr.Button("🔄 Cek Status Bot", variant="primary")
+        refresh_btn.click(fn=get_live_status, outputs=status_display)
+
+        gr.Markdown(
+            """
             ---
-            
             ### 📱 Cara Menggunakan:
             1. Buka Telegram dan cari bot kamu.
             2. Ketik `/start` untuk memulai kenalan & setup profil.
@@ -63,4 +80,6 @@ with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
         )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860, show_error=True)
+    while True:
+        time.sleep(3600)
