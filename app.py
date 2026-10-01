@@ -6,6 +6,7 @@ Runs the Telegram bot in background and serves a Gradio status dashboard.
 
 import os
 import sys
+import asyncio
 import logging
 import threading
 import traceback
@@ -14,10 +15,12 @@ from main import main as run_telegram_bot
 
 logger = logging.getLogger("app")
 
-# Start Telegram Bot in a background daemon thread
+# Start Telegram Bot in a background daemon thread with its own asyncio loop
 def start_bot_thread():
     try:
         logger.info("Initializing Telegram bot in background thread...")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         run_telegram_bot()
     except Exception as e:
         logger.error(f"FATAL: Bot execution error: {e}")
@@ -33,7 +36,7 @@ custom_css = """
 .status-badge { display: inline-block; background: #22c55e; color: white; padding: 4px 12px; border-radius: 9999px; font-weight: bold; }
 """
 
-with gr.Blocks(title="Ginchiee — AI Diet Companion", css=custom_css, theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
     with gr.Column(elem_classes="container"):
         gr.Markdown(
             """
@@ -41,7 +44,7 @@ with gr.Blocks(title="Ginchiee — AI Diet Companion", css=custom_css, theme=gr.
             ### *AI Health & Diet Companion*
             
             <div style="margin: 15px 0;">
-                <span class="status-badge">● Online 24/7</span>
+                <span class="status-badge" style="background:#22c55e;color:white;padding:4px 12px;border-radius:9999px;font-weight:bold;">● Online 24/7</span>
             </div>
             
             Ginchiee aktif di Telegram untuk membantu kamu mencatat nutrisi harian, mengelola jadwal kegiatan, dan memberikan rekomendasi porsi adaptif secara pintar! ✨

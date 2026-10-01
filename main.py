@@ -151,6 +151,13 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     logger.info("Starting Ginchiee Bot...")
 
+    # Ensure event loop is active for this thread
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     # Start health check server only if explicitly enabled (e.g. standalone docker)
     if os.getenv("RUN_HEALTH_SERVER") == "1":
         port = int(os.getenv("PORT", "7860"))
