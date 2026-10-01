@@ -1,7 +1,8 @@
 """
 app.py
 Hugging Face Spaces entry point for Ginchiee Bot.
-Runs Gradio status dashboard and background Telegram bot worker.
+Runs a minimal Python HTTP server on port 7860 to keep the Space alive,
+while running the Telegram bot in the background via asyncio.
 """
 
 import os
@@ -10,76 +11,96 @@ import time
 import asyncio
 import logging
 import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
-import gradio as gr
+
 from main import run_bot_async
 
+# ── Logging ────────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 logger = logging.getLogger("app")
 
-
+# ── Telegram Bot Worker ────────────────────────────────────────────────────────
 def start_bot_worker():
-    logger.info("Initializing Telegram bot in async worker thread...")
+    logger.info("Starting Telegram bot async loop in worker thread...")
     try:
         asyncio.run(run_bot_async())
     except Exception as e:
-        logger.error(f"FATAL: Telegram bot async loop crashed: {e}", exc_info=True)
+        logger.error(f"FATAL: Telegram bot crashed: {e}", exc_info=True)
 
 
-# Start Telegram bot in background daemon thread
-bot_thread = threading.Thread(target=start_bot_worker, daemon=True)
-bot_thread.start()
+# ── Minimal HTTP Server (Keeps HF Space alive) ────────────────────────────────
+START_TIME = datetime.now()
 
+class StatusHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        uptime = datetime.now() - START_TIME
+        hours, rem = divmod(int(uptime.total_seconds()), 3600)
+        mins, secs = divmod(rem, 60)
 
-def get_live_status():
-    is_alive = bot_thread.is_alive()
-    status = "🟢 AKTIF (Polling Telegram 24/7)" if is_alive else "🔴 Offline"
-    return f"Status: {status} | Waktu Server: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        html = f"""<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="30">
+    <title>Ginchiee Bot Status</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }}
+        .card {{ background: #1e293b; border-radius: 20px; padding: 40px; max-width: 600px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.5); text-align: center; }}
+        .emoji {{ font-size: 64px; margin-bottom: 16px; }}
+        h1 {{ font-size: 32px; font-weight: 700; color: #f8fafc; margin-bottom: 8px; }}
+        .subtitle {{ color: #94a3b8; margin-bottom: 30px; }}
+        .badge {{ display: inline-block; background: #22c55e; color: white; padding: 6px 20px; border-radius: 9999px; font-weight: 700; font-size: 16px; margin-bottom: 30px; }}
+        .stats {{ background: #0f172a; border-radius: 12px; padding: 20px; margin: 20px 0; text-align: left; }}
+        .stat {{ display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1e293b; color: #94a3b8; }}
+        .stat:last-child {{ border-bottom: none; }}
+        .stat-val {{ color: #e2e8f0; font-weight: 600; }}
+        .note {{ font-size: 12px; color: #475569; margin-top: 20px; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="emoji">🌸</div>
+        <h1>Ginchiee Bot</h1>
+        <p class="subtitle">AI Health & Diet Companion</p>
+        <div class="badge">● Online 24/7</div>
+        <div class="stats">
+            <div class="stat"><span>Status</span><span class="stat-val">🟢 Aktif & Polling Telegram</span></div>
+            <div class="stat"><span>Uptime</span><span class="stat-val">{hours}j {mins}m {secs}d</span></div>
+            <div class="stat"><span>Server Time</span><span class="stat-val">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span></div>
+            <div class="stat"><span>Bot Thread</span><span class="stat-val">{'🟢 Alive' if bot_thread.is_alive() else '🔴 Stopped'}</span></div>
+        </div>
+        <p class="note">Halaman ini auto-refresh setiap 30 detik · Dibuat dengan ❤️ untuk menjaga Space tetap hidup</p>
+    </div>
+</body>
+</html>"""
 
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
-with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
-    with gr.Column():
-        gr.Markdown(
-            """
-            # 🌸 Ginchiee Bot
-            ### *AI Health & Diet Companion*
-            
-            Ginchiee aktif di Telegram untuk membantu kamu mencatat nutrisi harian, mengelola jadwal kegiatan, dan memberikan rekomendasi porsi adaptif secara pintar! ✨
-            """
-        )
+    def log_message(self, format, *args):
+        pass  # suppress access logs
 
-        status_display = gr.Textbox(
-            value=get_live_status,
-            label="Live Bot Status",
-            interactive=False,
-        )
-
-        refresh_btn = gr.Button("🔄 Cek Status Bot", variant="primary")
-        refresh_btn.click(fn=get_live_status, outputs=status_display)
-
-        gr.Markdown(
-            """
-            ---
-            ### 📱 Cara Menggunakan:
-            1. Buka Telegram dan cari bot kamu.
-            2. Ketik `/start` untuk memulai kenalan & setup profil.
-            3. Kirim foto makanan atau catat dengan bahasa santai (*"tadi makan nasi padang lauk ayam gulai"*).
-            4. Ketik `/today` untuk melihat progress nutrisi harian & target adaptif.
-            
-            ### 🛠️ Daftar Perintah:
-            | Perintah | Fungsi |
-            | :--- | :--- |
-            | `/start` | Mulai & setup profil |
-            | `/today` | Progress nutrisi & riwayat hari ini |
-            | `/log [makanan]` | Catat makanan via teks |
-            | `/agenda` | Lihat daftar kegiatan & jadwal |
-            | `/tambahkegiatan` | Tambah agenda kegiatan baru |
-            | `/profile` | Lihat target kalori & makro |
-            | `/schedule` | Atur jadwal & reminder makan |
-            | `/help` | Panduan lengkap |
-            """
-        )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, show_error=True)
-    while True:
-        time.sleep(3600)
+    # 1. Launch Telegram bot in background thread
+    bot_thread = threading.Thread(target=start_bot_worker, daemon=True)
+    bot_thread.start()
+
+    # 2. Start HTTP server on main thread (blocks forever — keeps HF Space alive)
+    port = int(os.getenv("PORT", "7860"))
+    logger.info(f"Starting status HTTP server on port {port}...")
+    server = HTTPServer(("0.0.0.0", port), StatusHandler)
+    logger.info(f"Ginchiee status page live at http://0.0.0.0:{port} 🌸")
+    server.serve_forever()
