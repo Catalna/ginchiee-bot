@@ -1,50 +1,26 @@
 """
 app.py
 Hugging Face Spaces entry point for Ginchiee Bot.
-Runs the Telegram bot in background and serves a Gradio status dashboard.
+Runs Gradio status dashboard in background and Telegram bot on main thread.
 """
 
 import os
 import sys
-import asyncio
 import logging
-import threading
-import traceback
 import gradio as gr
 from main import main as run_telegram_bot
 
 logger = logging.getLogger("app")
 
-# Start Telegram Bot in a background daemon thread with its own asyncio loop
-def start_bot_thread():
-    try:
-        logger.info("Initializing Telegram bot in background thread...")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        run_telegram_bot()
-    except Exception as e:
-        logger.error(f"FATAL: Bot execution error: {e}")
-        traceback.print_exc()
-
-bot_thread = threading.Thread(target=start_bot_thread, daemon=True)
-bot_thread.start()
-
-# Gradio Web Dashboard for Hugging Face
-custom_css = """
-.container { max-width: 800px; margin: auto; padding: 20px; }
-.header { text-align: center; margin-bottom: 20px; }
-.status-badge { display: inline-block; background: #22c55e; color: white; padding: 4px 12px; border-radius: 9999px; font-weight: bold; }
-"""
-
 with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
-    with gr.Column(elem_classes="container"):
+    with gr.Column():
         gr.Markdown(
             """
             # 🌸 Ginchiee Bot
             ### *AI Health & Diet Companion*
             
             <div style="margin: 15px 0;">
-                <span class="status-badge" style="background:#22c55e;color:white;padding:4px 12px;border-radius:9999px;font-weight:bold;">● Online 24/7</span>
+                <span style="background:#22c55e;color:white;padding:4px 14px;border-radius:9999px;font-weight:bold;font-size:14px;">● Online 24/7</span>
             </div>
             
             Ginchiee aktif di Telegram untuk membantu kamu mencatat nutrisi harian, mengelola jadwal kegiatan, dan memberikan rekomendasi porsi adaptif secara pintar! ✨
@@ -72,4 +48,8 @@ with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
         )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    logger.info("1. Launching Gradio web dashboard...")
+    demo.launch(server_name="0.0.0.0", server_port=7860, prevent_thread_lock=True)
+    
+    logger.info("2. Launching Telegram Bot on main process...")
+    run_telegram_bot()
