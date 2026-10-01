@@ -1,0 +1,18 @@
+name: Keep Hugging Face Space Awake
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  request-space:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Request the Space health page
+        run: >-
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors
+          --max-time 30 https://catalna-ginchiee-bot.hf.space/

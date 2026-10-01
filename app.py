@@ -14,6 +14,8 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
+import spaces
+
 from main import build_app
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -24,6 +26,12 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("app")
+
+
+@spaces.GPU
+def zero_gpu_runtime_probe() -> None:
+    """Register this Gradio Space as ZeroGPU-compatible without reserving a GPU."""
+
 
 # ── Telegram Bot Worker ────────────────────────────────────────────────────────
 def start_bot_worker():
