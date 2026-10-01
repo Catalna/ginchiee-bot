@@ -5,16 +5,23 @@ Runs the Telegram bot in background and serves a Gradio status dashboard.
 """
 
 import os
+import sys
+import logging
 import threading
+import traceback
 import gradio as gr
 from main import main as run_telegram_bot
+
+logger = logging.getLogger("app")
 
 # Start Telegram Bot in a background daemon thread
 def start_bot_thread():
     try:
+        logger.info("Initializing Telegram bot in background thread...")
         run_telegram_bot()
     except Exception as e:
-        print(f"Bot execution error: {e}")
+        logger.error(f"FATAL: Bot execution error: {e}")
+        traceback.print_exc()
 
 bot_thread = threading.Thread(target=start_bot_thread, daemon=True)
 bot_thread.start()

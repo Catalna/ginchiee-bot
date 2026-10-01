@@ -11,12 +11,17 @@ load_dotenv()
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
-TELEGRAM_BOT_TOKEN: str = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN", "")
+if not TELEGRAM_BOT_TOKEN:
+    raise KeyError("Neither TELEGRAM_BOT_TOKEN nor BOT_TOKEN is set in environment variables.")
 
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
-GEMINI_API_KEY: str = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY", "")
+if not GEMINI_API_KEY:
+    raise KeyError("GEMINI_API_KEY is not set in environment variables.")
+
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 # ── Database ──────────────────────────────────────────────────────────────────
 

@@ -151,9 +151,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     logger.info("Starting Ginchiee Bot...")
 
-    # Start health check server for cloud platforms (Hugging Face / Render / Koyeb)
-    port = int(os.getenv("PORT", "7860"))
-    start_health_server(port)
+    # Start health check server only if explicitly enabled (e.g. standalone docker)
+    if os.getenv("RUN_HEALTH_SERVER") == "1":
+        port = int(os.getenv("PORT", "7860"))
+        start_health_server(port)
 
     request = HTTPXRequest(
         connect_timeout=20.0,
