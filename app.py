@@ -1,16 +1,31 @@
 """
 app.py
 Hugging Face Spaces entry point for Ginchiee Bot.
-Runs Gradio status dashboard in background and Telegram bot on main thread.
+Runs Gradio status dashboard and background Telegram bot worker.
 """
 
 import os
 import sys
+import asyncio
 import logging
+import threading
 import gradio as gr
-from main import main as run_telegram_bot
+from main import run_bot_async
 
 logger = logging.getLogger("app")
+
+
+def start_bot_worker():
+    logger.info("Initializing Telegram bot in async worker thread...")
+    try:
+        asyncio.run(run_bot_async())
+    except Exception as e:
+        logger.error(f"FATAL: Telegram bot async loop crashed: {e}", exc_info=True)
+
+
+# Start Telegram bot in background thread
+bot_thread = threading.Thread(target=start_bot_worker, daemon=True)
+bot_thread.start()
 
 with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
     with gr.Column():
@@ -48,8 +63,4 @@ with gr.Blocks(title="Ginchiee — AI Diet Companion") as demo:
         )
 
 if __name__ == "__main__":
-    logger.info("1. Launching Gradio web dashboard...")
-    demo.launch(server_name="0.0.0.0", server_port=7860, prevent_thread_lock=True)
-    
-    logger.info("2. Launching Telegram Bot on main process...")
-    run_telegram_bot()
+    demo.launch(server_name="0.0.0.0", server_port=7860)

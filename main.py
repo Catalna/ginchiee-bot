@@ -148,21 +148,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    logger.info("Starting Ginchiee Bot...")
-
-    # Ensure event loop is active for this thread
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    # Start health check server only if explicitly enabled (e.g. standalone docker)
-    if os.getenv("RUN_HEALTH_SERVER") == "1":
-        port = int(os.getenv("PORT", "7860"))
-        start_health_server(port)
-
+def build_app() -> Application:
+    """Build and configure the Telegram Application with all handlers."""
     request = HTTPXRequest(
         connect_timeout=20.0,
         read_timeout=20.0,
@@ -182,15 +169,11 @@ def main() -> None:
     app.add_error_handler(error_handler)
 
     # ── Register handlers (order matters) ─────────────────────────────────────
-
-    # 1. ConversationHandlers first (they have entry_points that catch /start)
     app.add_handler(build_onboarding_conversation())
 
-    # 2. Schedule conversation handler
     for handler in build_schedule_handlers():
         app.add_handler(handler)
 
-    # 3. Simple command handlers
     for handler in build_profile_handlers():
         app.add_handler(handler)
 
@@ -200,24 +183,39 @@ def main() -> None:
     for handler in build_today_handlers():
         app.add_handler(handler)
 
-    # Activity handlers (replaces Google Calendar)
     for handler in build_activity_handlers():
         app.add_handler(handler)
 
     for handler in build_help_handlers():
         app.add_handler(handler)
 
-    # Photo handler (multimodal vision)
     for handler in build_photo_handlers():
         app.add_handler(handler)
 
-    # 4. Free-form message handler (must be LAST)
     for handler in build_message_handlers():
         app.add_handler(handler)
 
-    # ── Start polling ──────────────────────────────────────────────────────────
+    return app
+
+
+async def run_bot_async() -> None:
+    """Run bot inside an existing asyncio loop (ideal for background threads in Gradio/HF Spaces)."""
+    logger.info("Starting Ginchiee Bot async loop...")
+    app = build_app()
+    async with app:
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+        logger.info("Ginchiee Bot is actively polling updates! 🌸")
+        while True:
+            await asyncio.sleep(3600)
+
+
+def main() -> None:
+    """Standard CLI entry point."""
+    logger.info("Starting Ginchiee Bot...")
+    app = build_app()
     logger.info("Bot is running! Press Ctrl+C to stop.")
-    app.run_polling(drop_pending_updates=True, stop_signals=None)
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
