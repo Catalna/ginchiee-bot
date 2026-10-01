@@ -103,8 +103,13 @@ async def _build_chat_context(user_id: int) -> dict:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Main message handler for free-form text."""
+    if not update.effective_user or not update.message:
+        return
+
     user_id = update.effective_user.id
-    text = update.message.text.strip()
+    text = update.message.text.strip() if update.message.text else ""
+
+    logger.info(f"Incoming message from user {user_id}: '{text}'")
 
     if not text:
         return

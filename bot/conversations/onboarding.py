@@ -81,6 +81,7 @@ def _make_keyboard(options: list[tuple[str, str]]) -> InlineKeyboardMarkup:
 async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point — triggered by /start."""
     user = update.effective_user
+    logger.info(f"/start received from user_id={user.id if user else 'unknown'}")
     await update.message.reply_text(
         f"Halo! 👋 Aku *Ginchiee*, companion diet kamu~\n\n"
         f"Aku akan bantu kamu menjaga pola makan, kasih reminder makan, "
