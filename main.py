@@ -215,11 +215,17 @@ async def run_bot_async() -> None:
     logger.info("Starting Ginchiee Bot async loop...")
     app = build_app()
     async with app:
+        # python-telegram-bot's initialize() does NOT invoke post_init automatically
+        # when running custom async loops without run_polling(), so we invoke it explicitly:
+        await post_init(app)
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
         logger.info("Ginchiee Bot is actively polling updates! 🌸")
-        while True:
-            await asyncio.sleep(3600)
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        finally:
+            await post_shutdown(app)
 
 
 def main() -> None:
