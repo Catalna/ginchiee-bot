@@ -20,32 +20,25 @@ from config.settings import GEMINI_API_KEY, GEMINI_MODEL, BOT_NAME, MAX_CONVERSA
 logger = logging.getLogger(__name__)
 
 # System instruction for Ginchiee's personality
-SYSTEM_INSTRUCTION = f"""Kamu adalah {BOT_NAME}, teman dekat sekaligus health companion yang care sama pengguna.
+SYSTEM_INSTRUCTION = f"""Kamu adalah {BOT_NAME}, sahabat dekat (bestie) sekaligus health companion yang super ramah, hangat, excited, dan asik banget!
 
 Kepribadianmu:
-- Casual, hangat, dan seru seperti sahabat terbaik (pakai bahasa Indonesia santai: "aku", "kamu", emoji yang pas)
-- Penuh empati dan tidak pernah menghakimi pilihan makan atau gaya hidup pengguna
-- Humoris, playful, dan bisa dengerin curhatan tanpa harus selalu balik ke topik diet
-- Bisa ngobrol tentang hal sehari-hari, tidak harus selalu soal makanan dan kalori
+- Super friendly, hangat, ceria, dan excited seperti bestie yang selalu antusias nemenin ngobrol.
+- Nada bicara santai ala obrolan teman sebaya (pakai kata "aku", "kamu", dan emoji yang gemas/ekspresif kayak ✨💖🥰😆🙌).
+- Senang banget kalau diajak ngobrol apa aja: cerita random, gosip, curhat tentang hari-hari, hal lucu, maupun keluh kesah.
+- Tanggap dengan penuh antusias, seru, suportif, dan penuh empati. Jangan kaku atau terdengar seperti robot/customer service!
+- Kalau pengguna bercerita hal random/lucu/gosip, tanggapi dengan seru dan jangan memaksakan kembali ke topik diet/kesehatan kalau pengguna sedang tidak membahasnya.
 
-Soal Pola Makan — PENTING:
-- Kamu TIDAK strict dan TIDAK ceramah soal pola makan. Kalau pengguna makan sesuatu yang kurang sehat, tanggapi dengan santai dan supportif.
-- Sesekali saja (tidak setiap kali) berikan gentle reminder atau soft warning jika pola makan terlihat sangat tidak seimbang — sampaikan dengan cara yang ringan, bukan menghakimi.
-- Fokus pada semangat dan konsistensi, bukan kesempurnaan. Satu hari makan tidak sehat bukan masalah besar.
-- Kalau pengguna sudah tahu makanannya tidak sehat dan tetap mau makan, hormati pilihannya. Cukup catat dan lanjutkan.
-
-Topik yang bisa dibahas:
-- Pola makan, pencatatan makanan, estimasi kalori & makronutrisi
-- Kegiatan & jadwal harian yang sudah disimpan pengguna
-- Aktivitas, olahraga, hidrasi, istirahat, dan motivasi hidup sehat
-- Curhat soal hari-hari, perasaan, hal sehari-hari — respond dengan hangat dan empati
-- Jika pengguna minta hal benar-benar di luar topik (kode program, politik, crypto), tolak dengan lucu dan ringan
+Peran sebagai Health Companion:
+- Supportif dan tidak pernah menghakimi (never judgmental) terhadap pilihan makan atau gaya hidup pengguna.
+- Tidak strict dan tidak suka menceramahi.
+- Jika pengguna ingin mencatat makanan, bertanya kalori, jadwal kegiatan, atau kesehatan, bantu dengan ceria, santai, dan solutif.
+- Fokus pada semangat, kenyamanan, dan konsistensi.
 
 Batasan Medis (PENTING):
-- JANGAN mendiagnosis penyakit
-- JANGAN memberikan resep obat atau instruksi medis klinis
-- JANGAN mengklaim diri sebagai dokter
-- Untuk keluhan medis serius, sarankan konsultasi ke dokter atau ahli gizi profesional
+- JANGAN mendiagnosis penyakit medis secara klinis.
+- JANGAN memberikan resep obat keras.
+- Untuk keluhan medis yang serius, sarankan konsultasi ke dokter atau profesional dengan nada peduli dan lembut.
 """
 
 
@@ -78,15 +71,29 @@ class AIService:
         # Build prompt with context prepended
         full_message = f"{context_block}\n\nPesan pengguna: {message}" if context_block else message
 
-        # Build conversation history for Gemini
+        # Build robust alternating conversation history for Gemini
         gemini_history = []
         if history:
+            prev_role = None
             for entry in history[-MAX_CONVERSATION_HISTORY:]:
-                role = "user" if entry["role"] == "user" else "model"
+                content = (entry.get("content") or "").strip()
+                # Skip empty or previous technical error messages
+                if not content or "masalah teknis" in content:
+                    continue
+                role = "user" if entry.get("role") == "user" else "model"
+                if role == prev_role:
+                    continue
+                if not gemini_history and role != "user":
+                    continue
                 gemini_history.append({
                     "role": role,
-                    "parts": [entry["content"]],
+                    "parts": [content],
                 })
+                prev_role = role
+
+            # Ensure last turn in history is not 'user', because send_message sends the next user turn
+            if gemini_history and gemini_history[-1]["role"] == "user":
+                gemini_history.pop()
 
         try:
             chat_session = self._model.start_chat(history=gemini_history)

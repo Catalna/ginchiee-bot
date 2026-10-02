@@ -283,9 +283,6 @@ async def _handle_possible_food_log(
     from services.nutrition_service import log_food_from_text, get_daily_progress
     from services.user_service import has_diet_profile
 
-    # Save user message to history first
-    await save_conversation(user_id, "user", text)
-
     logged_items = await log_food_from_text(
         user_id=user_id,
         text=text,
@@ -316,6 +313,7 @@ async def _handle_possible_food_log(
 
         await update.message.reply_text(food_summary, parse_mode="Markdown")
         await update.message.reply_text(response)
+        await save_conversation(user_id, "user", text)
         await save_conversation(user_id, "model", response)
     else:
         # Treat as general chat
