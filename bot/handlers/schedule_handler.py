@@ -6,6 +6,7 @@ bot/handlers/schedule_handler.py
 
 import logging
 import re
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CallbackQueryHandler,
@@ -17,10 +18,10 @@ from telegram.ext import (
 )
 
 from services.user_service import (
+    VALID_MEALS,
     get_meal_schedules,
     set_meal_schedule,
     user_exists,
-    VALID_MEALS,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,7 @@ def build_schedule_handlers():
         fallbacks=[CommandHandler("cancel", cancel_schedule)],
         allow_reentry=True,
         per_message=False,
+        conversation_timeout=300,
     )
     return [
         conv,

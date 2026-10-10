@@ -11,13 +11,12 @@ Startup sequence:
   6. Start polling
 """
 
-import asyncio
 import logging
 import os
 import sys
 import threading
 import warnings
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Suppress known non-critical library warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="google.api_core")
@@ -28,16 +27,28 @@ except ImportError:
     pass
 
 from telegram import BotCommand, Update
-from telegram.error import TimedOut, NetworkError
-from telegram.ext import Application, ContextTypes
+from telegram.error import NetworkError, TimedOut
+from telegram.ext import (
+    Application,
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 from telegram.request import HTTPXRequest
 
-from config.settings import TELEGRAM_BOT_TOKEN, LOG_LEVEL
-from database.connection import init_db, close_db
+from config.settings import (
+    ALLOWED_USER_IDS,
+    GEMINI_MODEL,
+    LOG_LEVEL,
+    TELEGRAM_BOT_TOKEN,
+)
+from database.connection import close_db, init_db
 from database.migrations import run_migrations
 from services.ai_service import AIService
 from services.scheduler_service import start_scheduler, stop_scheduler
-
 
 # ── Health Check HTTP Server for Cloud Hosting (HF Spaces / Render) ───────────
 
@@ -64,14 +75,18 @@ def start_health_server(port: int = 7860) -> None:
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 from bot.conversations.onboarding import build_onboarding_conversation
-from bot.handlers.profile_handler import build_profile_handlers
-from bot.handlers.food_handler import build_food_handlers
-from bot.handlers.today_handler import build_today_handlers
-from bot.handlers.schedule_handler import build_schedule_handlers
 from bot.handlers.activity_handler import build_activity_handlers
-from bot.handlers.photo_handler import build_photo_handlers
+from bot.handlers.food_handler import build_food_handlers
 from bot.handlers.help_handler import build_help_handlers
-from bot.handlers.message_handler import build_message_handlers
+from bot.handlers.message_handler import (
+    handle_confirm_callback,
+    handle_done_callback,
+    handle_message,
+)
+from bot.handlers.photo_handler import build_photo_handlers
+from bot.handlers.profile_handler import build_profile_handlers
+from bot.handlers.schedule_handler import build_schedule_handlers
+from bot.handlers.today_handler import build_today_handlers
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -113,7 +128,6 @@ BOT_COMMANDS = [
 async def post_init(application: Application) -> None:
     """Runs after application initializes, before polling starts."""
     try:
-        # Init database
         logger.info("Initializing database...")
         await init_db()
         await run_migrations()
@@ -126,7 +140,11 @@ async def post_init(application: Application) -> None:
         # Init AI service
         ai_service = AIService()
         application.bot_data["ai_service"] = ai_service
-        logger.info("AI service initialized.")
+        logger.info(
+            "AI service initialized (model=%s, temp=%.2f, max_tokens=%d).",
+            GEMINI_MODEL, ai_service._generation_config.temperature,
+            ai_service._generation_config.max_output_tokens,
+        )
     except Exception as e:
         logger.critical(f"FATAL: AI service initialization failed: {e}", exc_info=True)
         raise
@@ -160,6 +178,55 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+async def is_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Gate every update behind the optional ALLOWED_USER_IDS allow-list.
+
+    When the list is empty (the default) everybody is allowed, which keeps local
+    development friction-free. Set ALLOWED_USER_IDS to a comma-separated list of
+    Telegram user ids to restrict the bot to just those people.
+    """
+    if not ALLOWED_USER_IDS:
+        return True
+
+    user = update.effective_user
+    if user is None:
+        return False
+
+    if user.id in ALLOWED_USER_IDS:
+        return True
+
+    logger.warning(
+        "Blocked update from unauthorised user %s (@%s)",
+        user.id, user.username or "?",
+    )
+    try:
+        await update.effective_message.reply_text(
+            "maaf, bot ini belum terbuka untuk publik ya"
+        )
+    except Exception:
+        pass
+    return False
+
+
+# Backwards-compatible helper for callers that want to gate a single handler.
+async def guarded(handler):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if await is_allowed(update, context):
+            await handler(update, context)
+
+    return wrapper
+
+
+async def _allow_list_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reject updates from users outside ALLOWED_USER_IDS.
+
+    Registered with `TypeHandler` at group -1 so it runs before every real
+    handler; raising ApplicationHandlerStop stops all further processing.
+    """
+    if not await is_allowed(update, context):
+        raise ApplicationHandlerStop()
+
+
 def build_app() -> Application:
     """Build and configure the Telegram Application with all handlers."""
     request = HTTPXRequest(
@@ -179,6 +246,9 @@ def build_app() -> Application:
     )
 
     app.add_error_handler(error_handler)
+
+    # Allow-list first, before any real handler (no-op when the list is empty).
+    app.add_handler(TypeHandler(Update, _allow_list_gate), group=-1)
 
     # ── Register handlers (order matters) ─────────────────────────────────────
     app.add_handler(build_onboarding_conversation())
@@ -204,33 +274,29 @@ def build_app() -> Application:
     for handler in build_photo_handlers():
         app.add_handler(handler)
 
-    for handler in build_message_handlers():
-        app.add_handler(handler)
+    # Inline buttons: confirmations for data-changing actions, plus the
+    # per-activity done/delete buttons.
+    app.add_handler(CallbackQueryHandler(handle_confirm_callback, pattern=r"^confirm:"))
+    app.add_handler(CallbackQueryHandler(handle_done_callback, pattern=r"^done:"))
+
+    # Free-form text is handled by the intent router.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     return app
 
 
-async def run_bot_async() -> None:
-    """Run bot inside an existing asyncio loop (ideal for background threads in Gradio/HF Spaces)."""
-    logger.info("Starting Ginchiee Bot async loop...")
-    app = build_app()
-    async with app:
-        # python-telegram-bot's initialize() does NOT invoke post_init automatically
-        # when running custom async loops without run_polling(), so we invoke it explicitly:
-        await post_init(app)
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        logger.info("Ginchiee Bot is actively polling updates! 🌸")
-        try:
-            while True:
-                await asyncio.sleep(3600)
-        finally:
-            await post_shutdown(app)
-
-
 def main() -> None:
-    """Standard CLI entry point."""
+    """CLI entry point (also used by the Docker image)."""
     logger.info("Starting Ginchiee Bot...")
+
+    # The health endpoint makes the container pass platform liveness checks
+    # (HF Spaces / Render / plain `docker run`).
+    try:
+        port = int(os.getenv("PORT", "7860"))
+    except ValueError:
+        port = 7860
+    start_health_server(port)
+
     app = build_app()
     logger.info("Bot is running! Press Ctrl+C to stop.")
     app.run_polling(drop_pending_updates=True)
@@ -238,3 +304,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+

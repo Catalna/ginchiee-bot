@@ -73,46 +73,68 @@ python main.py
 
 ```
 ginchiee-bot/
-├── main.py                  # Entry point
+├── main.py                       # Entry point
 ├── config/
-│   └── settings.py          # Konfigurasi
+│   └── settings.py               # Konfigurasi (fail-fast)
 ├── database/
-│   ├── connection.py        # SQLite connection
-│   ├── migrations.py        # Auto-migration
-│   └── schema.sql           # DDL
+│   ├── connection.py             # PostgreSQL pool (asyncpg)
+│   ├── migrations.py             # Migrasi berversi
+│   └── migrations/               # 0001_initial.sql, 0002_...
 ├── nutrition/
-│   ├── calculator.py        # BMR/TDEE/macro calculator
-│   ├── food_database.py     # Database nutrisi makanan
-│   └── parser.py            # NLP food parser
+│   ├── calculator.py             # BMR/TDEE/macro calculator
+│   ├── food_database.py          # Database nutrisi makanan
+│   └── parser.py                 # NLP food parser
 ├── services/
-│   ├── ai_service.py        # Gemini LLM abstraction
-│   ├── nutrition_service.py # Food logging & tracking
-│   ├── reminder_service.py  # Reminder generation
-│   ├── scheduler_service.py # APScheduler
-│   └── user_service.py      # User CRUD
+│   ├── ai_service.py             # Gemini LLM abstraction
+│   ├── personality.py            # Persona, few-shot, sanitizer
+│   ├── intent_service.py          # Router intent (1 call/pesan)
+│   ├── nutrition_service.py       # Food logging, koreksi & hapus
+│   ├── reminder_service.py        # Reminder generation
+│   ├── scheduler_service.py       # APScheduler
+│   └── user_service.py            # User CRUD
+├── scripts/
+│   └── migrate_sqlite_to_postgres.py
 ├── bot/
 │   ├── conversations/
-│   │   └── onboarding.py    # Multi-step registration
+│   │   └── onboarding.py         # Multi-step registration
 │   └── handlers/
+│       ├── activity_handler.py
 │       ├── food_handler.py
 │       ├── help_handler.py
-│       ├── message_handler.py
+│       ├── message_handler.py     # Router + konfirmasi
+│       ├── photo_handler.py
 │       ├── profile_handler.py
 │       ├── schedule_handler.py
 │       └── today_handler.py
-└── docs/
-    ├── PRD.md
-    ├── Architecture.md
-    └── Config.md
+└── tests/
+    ├── test_database.py          # Migrasi, wrapper, SQL nyata
+    ├── test_personality.py       # Sanitizer & gaya bicara
+    ├── test_intent_router.py     # Parser intent
+    └── test_huggingface_runtime.py
 ```
 
 ## 🔧 Stack
 
 - **Python 3.11+**
 - **python-telegram-bot** — Telegram handler
-- **Google Gemini** — LLM
-- **SQLite + aiosqlite** — Database
-- **APScheduler** — Meal reminder scheduler
+- **Google Gemini** — LLM (persona + JSON-mode router)
+- **PostgreSQL + asyncpg** — Database (Neon / Supabase / lokal)
+- **APScheduler** — Meal & activity reminder scheduler
+- **Migrasi berversi** — `database/migrations/NNN_*.sql`, idempotent per boot
+
+## ⚙️ Konfigurasi
+
+| Env | Wajib | Isi |
+|-----|-------|-----|
+| `TELEGRAM_BOT_TOKEN` | ✅ | Token dari @BotFather |
+| `GEMINI_API_KEY` | ✅ | API key Google AI Studio |
+| `DATABASE_URL` | ✅ | Connection string Postgres |
+| `ALLOWED_USER_IDS` | — | Batasi bot ke user id tertentu (koma) |
+| `AI_TEMPERATURE` | — | Default `0.95` |
+| `GEMINI_MODEL` | — | Default `gemini-flash-lite-latest` |
+
+Di Hugging Face, set variabel ini di **Settings → Variables and secrets**, bukan
+memakai file `.env`.
 
 ## ⚠️ Disclaimer
 

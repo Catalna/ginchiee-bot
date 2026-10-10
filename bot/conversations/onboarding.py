@@ -15,6 +15,7 @@ Steps:
 """
 
 import logging
+
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -29,8 +30,8 @@ from telegram.ext import (
     filters,
 )
 
-from services.user_service import create_or_update_user, create_or_update_diet_profile
 from services.nutrition_service import get_nutrition_target
+from services.user_service import create_or_update_diet_profile, create_or_update_user
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +84,11 @@ async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user = update.effective_user
     logger.info(f"/start received from user_id={user.id if user else 'unknown'}")
     await update.message.reply_text(
-        f"Halo! 👋 Aku *Ginchiee*, companion diet kamu~\n\n"
-        f"Aku akan bantu kamu menjaga pola makan, kasih reminder makan, "
-        f"dan ngobrol soal nutrisi! 🍎\n\n"
-        f"Yuk kita mulai setup profil dulu!\n\n"
-        f"*Siapa namamu?*\n_(kamu boleh pakai nama panggilan)_",
+        "Halo! 👋 Aku *Ginchiee*, companion diet kamu~\n\n"
+        "Aku akan bantu kamu menjaga pola makan, kasih reminder makan, "
+        "dan ngobrol soal nutrisi! 🍎\n\n"
+        "Yuk kita mulai setup profil dulu!\n\n"
+        "*Siapa namamu?*\n_(kamu boleh pakai nama panggilan)_",
         parse_mode="Markdown",
     )
     return ASK_NAME
@@ -229,7 +230,6 @@ async def confirm_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
     # Calculate targets
-    from services.nutrition_service import get_nutrition_target
     target = await get_nutrition_target(user_id)
 
     goal_labels = {
@@ -285,6 +285,10 @@ async def cancel_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 # ── ConversationHandler factory ───────────────────────────────────────────────
 
 def build_onboarding_conversation() -> ConversationHandler:
+    # conversation_timeout matters: without it, an abandoned setup stays alive in
+    # user_data forever and every later message is swallowed by the state
+    # handler instead of reaching normal chat (e.g. the user answers "halo" to
+    # the age question).
     return ConversationHandler(
         entry_points=[CommandHandler("start", start_onboarding)],
         states={
@@ -297,7 +301,13 @@ def build_onboarding_conversation() -> ConversationHandler:
             ASK_ACTIVITY: [CallbackQueryHandler(ask_timezone, pattern="^(SEDENTARY|LIGHT|MODERATE|ACTIVE|VERY_ACTIVE)$")],
             ASK_TIMEZONE: [CallbackQueryHandler(confirm_profile, pattern="^Asia/")],
         },
-        fallbacks=[CommandHandler("cancel", cancel_onboarding)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_onboarding),
+            # Anything that is not recognisable input for the current step ends
+            # the conversation rather than trapping the user inside it.
+            MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_onboarding),
+        ],
         allow_reentry=True,
         per_message=False,
+        conversation_timeout=600,
     )

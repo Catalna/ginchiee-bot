@@ -1,24 +1,33 @@
 FROM python:3.11-slim
 
+# No build-essential / sqlite3: nothing here compiles C extensions (asyncpg
+# ships wheels), so the packages only inflate the image and its attack surface.
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    sqlite3 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
+# Copy and install dependencies first so layer caching works when only code
+# changes.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Copy all project files
+# Copy only the source. .dockerignore excludes .env, data/, .venv/, .git/ and
+# the OAuth secrets, so credentials and user data cannot leak into the image.
 COPY . .
 
-# Ensure data directory exists for SQLite storage
-RUN mkdir -p /app/data && chmod -R 777 /app/data
+# The app writes nothing to disk: all state lives in Postgres. Create a
+# non-writable runtime directory only so a stray relative path cannot fail.
+RUN mkdir -p /app/data \
+    && chmod 755 /app/data
 
-# Hugging Face Spaces port
+# Run as a non-root user.
+RUN useradd --create-home --uid 10001 ginchiee \
+    && chown -R ginchiee:ginchiee /app
+USER ginchiee
+
+# Hugging Face Spaces port. main.py serves a lightweight health endpoint on it.
+ENV PORT=7860
 EXPOSE 7860
 
+# DATABASE_URL (plus TELEGRAM_BOT_TOKEN / GEMINI_API_KEY) must be supplied at
+# runtime via Space Secrets or `docker run -e`, never baked into the image.
 CMD ["python", "main.py"]

@@ -5,18 +5,19 @@ bot/handlers/today_handler.py
 
 import logging
 from datetime import datetime
+
 import pytz
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config.settings import APP_TIMEZONE
 from services.nutrition_service import (
-    get_daily_progress,
-    get_today_food_logs,
-    get_nutrition_history,
     get_adaptive_target,
+    get_daily_progress,
+    get_nutrition_history,
+    get_today_food_logs,
 )
-from services.user_service import user_exists, has_diet_profile
+from services.user_service import has_diet_profile, user_exists
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     # ── Today section ──────────────────────────────────────────────────────────
     lines = [
-        f"📊 *Progress Hari Ini*",
+        "📊 *Progress Hari Ini*",
         f"_{today_str}_\n",
     ]
 

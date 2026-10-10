@@ -10,13 +10,17 @@ import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from services.user_service import get_all_active_schedules
-from services.reminder_service import generate_reminder_message
 from services.activity_service import get_due_activity_reminders, mark_reminded
+from services.reminder_service import generate_reminder_message
+from services.user_service import get_all_active_schedules
 
 logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
+
+#: In-memory guard so a meal reminder is sent at most once per user/meal/day,
+#: even though the matching window spans several scheduler ticks.
+_sent_today: set[tuple[int, str, str]] = set()
 
 
 def get_scheduler() -> AsyncIOScheduler:
@@ -28,7 +32,12 @@ def get_scheduler() -> AsyncIOScheduler:
 
 async def _check_reminders(bot, ai_service) -> None:
     """
-    Runs every minute. Finds all due meal reminders and sends them.
+    Runs every minute at :00. Sends meal reminders that are due.
+
+    Matching used to require `current_hhmm == meal_time` exactly, which silently
+    dropped a whole day's reminder whenever the event loop was blocked for more
+    than 60s by a slow model call (max_instances=1). A 5-minute window with a
+    `last_sent` guard keeps it at-most-once per day while tolerating a slow tick.
     """
     schedules = await get_all_active_schedules()
     now_utc = datetime.now(pytz.utc)
@@ -37,26 +46,64 @@ async def _check_reminders(bot, ai_service) -> None:
         user_id = sched["user_id"]
         meal_type = sched["meal_type"]
         meal_time = sched["time"]          # HH:MM
-        user_tz_str = sched.get("timezone", "Asia/Jakarta")
+        user_tz_str = sched.get("timezone") or "Asia/Jakarta"
 
         try:
             user_tz = pytz.timezone(user_tz_str)
             now_local = now_utc.astimezone(user_tz)
             current_hhmm = now_local.strftime("%H:%M")
 
-            if current_hhmm == meal_time:
-                logger.info(
-                    f"Sending {meal_type} reminder to user {user_id} at {meal_time}"
-                )
-                message = await generate_reminder_message(
-                    user_id=user_id,
-                    meal_type=meal_type,
-                    ai_service=ai_service,
-                )
-                await bot.send_message(chat_id=user_id, text=message)
+            if not _within_window(current_hhmm, meal_time):
+                continue
+
+            # At-most-once per user/meal/day even if the window overlaps ticks.
+            sent_key = (user_id, meal_type, now_local.strftime("%Y-%m-%d"))
+            if sent_key in _sent_today:
+                continue
+
+            logger.info("Sending %s reminder to user %s at %s", meal_type, user_id, meal_time)
+            message = await generate_reminder_message(
+                user_id=user_id,
+                meal_type=meal_type,
+                ai_service=ai_service,
+            )
+            await bot.send_message(chat_id=user_id, text=message)
+
+            # Only mark as sent after a successful delivery, so a failed send is
+            # retried on the next tick inside the same window.
+            _sent_today.add(sent_key)
+            _prune_sent_cache(now_local)
 
         except Exception as e:
             logger.error(f"Error processing meal reminder for user {user_id}: {e}")
+
+
+def _within_window(current_hhmm: str, target_hhmm: str, grace_minutes: int = 5) -> bool:
+    """True when `current_hhmm` is at or after `target_hhmm` within grace."""
+    def to_minutes(value: str) -> int | None:
+        try:
+            hours, minutes = value.split(":")
+            total = int(hours) * 60 + int(minutes)
+            return total if 0 <= total < 24 * 60 else None
+        except (ValueError, AttributeError):
+            return None
+
+    now = to_minutes(current_hhmm)
+    target = to_minutes(target_hhmm)
+    if now is None or target is None:
+        return False
+
+    # Same-minute window, extended by the grace period so a slow tick still fires.
+    return target <= now <= target + grace_minutes
+
+
+def _prune_sent_cache(now_local: datetime) -> None:
+    """Keep the in-memory dedupe set small and relevant."""
+    if len(_sent_today) < 500:
+        return
+    today = now_local.strftime("%Y-%m-%d")
+    for key in [k for k in _sent_today if k[2] != today]:
+        _sent_today.discard(key)
 
 
 async def _check_activity_reminders(bot, ai_service) -> None:

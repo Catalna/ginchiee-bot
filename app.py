@@ -5,10 +5,10 @@ Runs a minimal Python HTTP server on port 7860 to keep the Space alive,
 while running the Telegram bot in the background via asyncio.
 """
 
-import os
-import sys
 import asyncio
 import logging
+import os
+import sys
 import threading
 
 import gradio as gr

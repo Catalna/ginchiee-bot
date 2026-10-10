@@ -5,11 +5,12 @@ bot/handlers/profile_handler.py
 """
 
 import logging
+
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
-from services.user_service import get_user, get_diet_profile, has_diet_profile
 from services.nutrition_service import get_nutrition_target
+from services.user_service import get_diet_profile, get_user
 
 logger = logging.getLogger(__name__)
 

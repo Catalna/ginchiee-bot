@@ -1,0 +1,62 @@
+# Never copy build/credential/data artifacts into the image.
+#
+# Without this, `COPY . .` baked the live .env (Telegram bot token + Gemini API
+# key), the Google OAuth client secret, .venv/ and the entire .git/ and data/
+# directories (which held real user conversation history) into image layers.
+# Anyone with the image could recover all of them.
+
+# Virtual environment & caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets — must never enter an image layer
+.env
+.env.*
+!.env.example
+*client_secret*.json
+oauth_client_secrets.json
+token*.json
+credentials.json
+*.pem
+*.key
+
+# Database files (user PII / conversation history)
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI & docs not needed at runtime
+.github/
+docs/
+tests/
+README.md
+
+# Local tooling
+.venv-tools/
+scripts/migrate_sqlite_to_postgres.py
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+logs/

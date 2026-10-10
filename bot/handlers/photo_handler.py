@@ -6,28 +6,28 @@ Uses Gemini Vision to classify & process photos (food, event poster, general).
 
 import logging
 from datetime import datetime
-from telegram import Update
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
-from services.user_service import (
-    user_exists,
-    get_user,
-    get_diet_profile,
-    get_meal_schedules,
-    save_conversation,
-)
-from services.nutrition_service import (
-    get_nutrition_target,
-    get_daily_consumed,
-    get_today_food_logs,
-    get_daily_progress,
-    log_food_from_photo_items,
-    get_nutrition_history,
-    get_adaptive_target,
-)
 from services.activity_service import (
     add_activity,
     get_upcoming_activities,
+)
+from services.nutrition_service import (
+    get_adaptive_target,
+    get_daily_consumed,
+    get_nutrition_history,
+    get_nutrition_target,
+    get_today_food_logs,
+    log_food_from_photo_items,
+)
+from services.user_service import (
+    get_diet_profile,
+    get_meal_schedules,
+    get_user,
+    save_conversation,
+    user_exists,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             dt_obj = datetime.fromisoformat(activity_dt)
             dt_str = dt_obj.strftime("%A, %d %b %Y • %H:%M")
         except Exception:
-            dt_str = activity_dt[:16].replace("T", " ")
+            dt_str = str(activity_dt)[:16].replace("T", " ")
 
         desc_line = f"📝 _{desc}_\n" if desc else ""
         comment = result.get("comment", "")
@@ -176,7 +176,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"_Ketik /agenda untuk lihat semua kegiatanmu!_ 🌸"
         )
 
-        await update.message.reply_text(response_text, parse_mode="Markdown")
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ tandai selesai", callback_data=f"done:{activity_id}"),
+                InlineKeyboardButton("🗑️ hapus", callback_data=f"del_activity:{activity_id}"),
+            ]
+        ])
+
+        await update.message.reply_text(
+            response_text, parse_mode="Markdown", reply_markup=keyboard
+        )
         user_log_text = f"[Kirim Foto Jadwal/Poster] {caption}" if caption else "[Kirim Foto Jadwal/Poster]"
         await save_conversation(user_id, "user", user_log_text)
         await save_conversation(user_id, "model", response_text)
@@ -197,3 +206,4 @@ def build_photo_handlers():
             handle_photo,
         )
     ]
+
