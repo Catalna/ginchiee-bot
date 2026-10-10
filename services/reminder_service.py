@@ -4,9 +4,12 @@ Build reminder context and trigger AI-generated reminder messages.
 """
 
 import logging
-from datetime import date
 
-from services.nutrition_service import get_daily_consumed, get_nutrition_target
+from services.nutrition_service import (
+    get_daily_consumed,
+    get_nutrition_target,
+    user_today,
+)
 from services.user_service import get_user
 
 logger = logging.getLogger(__name__)
@@ -24,7 +27,8 @@ async def build_reminder_context(user_id: int, meal_type: str) -> dict:
         "user_id": user_id,
         "user_name": user["name"] if user else "kamu",
         "meal_type": meal_type,
-        "date": date.today().isoformat(),
+        # The user's own date, not the container's (UTC on Hugging Face).
+        "date": user_today(user_id).isoformat(),
         # Consumed today
         "calories_consumed": consumed.get("calories", 0),
         "protein_consumed": consumed.get("protein_g", 0),

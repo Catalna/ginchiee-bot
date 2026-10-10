@@ -5,5 +5,10 @@ APScheduler==3.10.4
 python-dotenv==1.0.1
 pytz==2024.2
 Pillow>=10.0.0
-gradio==6.29.0
-spaces==0.51.3
+# NOTE: do NOT hard-pin gradio or spaces here. Hugging Face's Gradio SDK
+# builder always injects its own `gradio[oauth,mcp]==<current>` and
+# `spaces==<current>` into the install command, so an exact `==` pin here makes
+# pip resolve two conflicting versions and the build fails outright. A floor
+# version keeps local `app.py` working while letting the Space's pin win.
+gradio>=6.29
+spaces>=0.51.3

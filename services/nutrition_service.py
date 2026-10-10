@@ -22,6 +22,38 @@ from services.user_service import get_diet_profile
 logger = logging.getLogger(__name__)
 
 
+# ── "Today" must follow the USER's timezone ──────────────────────────────────
+#
+# Do not use date.today()/datetime.now(): they read the machine's timezone.
+# On Hugging Face the container runs in UTC while users are in Asia/Jakarta
+# (UTC+7), so between 00:00 and 07:00 WIB the UTC date is still the previous
+# day. Meals logged then got filed under yesterday and /today showed nothing.
+# The user's timezone is already stored in `users.timezone`, so use it.
+
+def user_today(user_id: int) -> date:
+    """Today's date as seen by this user (falls back to the app timezone)."""
+    import pytz
+
+    from services.activity_service import _tz_for
+
+    try:
+        tz_name = _tz_for(user_id)
+    except Exception:
+        tz_name = "Asia/Jakarta"
+
+    try:
+        return datetime.now(pytz.timezone(tz_name)).date()
+    except Exception:
+        return datetime.now().date()
+
+
+async def resolve_day(user_id: int, day: Optional[str]) -> date:
+    """Resolve an optional day string against the user's timezone."""
+    if day:
+        return as_date(day)
+    return user_today(user_id)
+
+
 # ── Nutrition Target ──────────────────────────────────────────────────────────
 
 async def get_nutrition_target(user_id: int) -> Optional[NutritionTarget]:
@@ -91,7 +123,7 @@ async def log_food_items(
     Returns list of logged items with calculated nutrition (and their ids).
     """
     db = await get_db()
-    today = as_date(log_date or date.today())
+    day = await resolve_day(user_id, log_date)
     meal = split_meal_type(meal_type)
     logged = []
 
@@ -115,7 +147,7 @@ async def log_food_items(
             """,
             (
                 user_id,
-                today,
+                day,
                 meal,
                 item.food_name,
                 item.amount_g,
@@ -136,7 +168,7 @@ async def log_food_items(
             "fat_g": nutrition.fat_g,
         })
 
-    logger.info("Logged %d food item(s) for user %s on %s", len(logged), user_id, today)
+    logger.info("Logged %d food item(s) for user %s on %s", len(logged), user_id, day)
     return logged
 
 
@@ -199,7 +231,7 @@ async def log_food_from_photo_items(
 async def get_daily_consumed(user_id: int, date_str: Optional[str] = None) -> dict:
     """Get consumed nutrition totals for a given date (defaults to today)."""
     db = await get_db()
-    today = as_date(date_str or date.today())
+    day = await resolve_day(user_id, date_str)
 
     row = await db.execute(
         """
@@ -211,7 +243,7 @@ async def get_daily_consumed(user_id: int, date_str: Optional[str] = None) -> di
         FROM food_logs
         WHERE user_id = $1 AND date = $2
         """,
-        (user_id, today),
+        (user_id, day),
     ).fetchone()
 
     if not row:
@@ -227,7 +259,7 @@ async def get_daily_consumed(user_id: int, date_str: Optional[str] = None) -> di
 async def get_today_food_logs(user_id: int, date_str: Optional[str] = None) -> list[dict]:
     """Get all food logs for today."""
     db = await get_db()
-    today = as_date(date_str or date.today())
+    day = await resolve_day(user_id, date_str)
 
     rows = await db.execute(
         """
@@ -236,7 +268,7 @@ async def get_today_food_logs(user_id: int, date_str: Optional[str] = None) -> l
         WHERE user_id = $1 AND date = $2
         ORDER BY id ASC
         """,
-        (user_id, today),
+        (user_id, day),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -244,7 +276,7 @@ async def get_today_food_logs(user_id: int, date_str: Optional[str] = None) -> l
 async def get_recent_food_logs(user_id: int, date_str: Optional[str] = None, limit: int = 5) -> list[dict]:
     """Most recent food log entries for a day (used by correction flows)."""
     db = await get_db()
-    today = as_date(date_str or date.today())
+    day = await resolve_day(user_id, date_str)
 
     rows = await db.execute(
         """
@@ -254,7 +286,7 @@ async def get_recent_food_logs(user_id: int, date_str: Optional[str] = None, lim
         ORDER BY id DESC
         LIMIT $3
         """,
-        (user_id, today, int(limit)),
+        (user_id, day, int(limit)),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -311,14 +343,14 @@ async def delete_food_log(user_id: int, log_id: int) -> Optional[dict]:
 async def delete_food_log_by_name(user_id: int, food_name: str, date_str: Optional[str] = None) -> list[dict]:
     """Delete every today's entry whose name matches (case-insensitive)."""
     db = await get_db()
-    today = as_date(date_str or date.today())
+    day = await resolve_day(user_id, date_str)
     rows = await db.execute(
         """
         DELETE FROM food_logs
         WHERE user_id = $1 AND date = $2 AND lower(food_name) = lower($3)
         RETURNING id, food_name, amount_g, calories, protein_g, carbs_g, fat_g
         """,
-        (user_id, today, food_name),
+        (user_id, day, food_name),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -326,7 +358,7 @@ async def delete_food_log_by_name(user_id: int, food_name: str, date_str: Option
 async def delete_last_food_log(user_id: int, date_str: Optional[str] = None) -> Optional[dict]:
     """Undo the most recent entry."""
     db = await get_db()
-    today = as_date(date_str or date.today())
+    day = await resolve_day(user_id, date_str)
     row = await db.execute(
         """
         DELETE FROM food_logs
@@ -338,7 +370,7 @@ async def delete_last_food_log(user_id: int, date_str: Optional[str] = None) -> 
         )
         RETURNING id, food_name, amount_g, calories, protein_g, carbs_g, fat_g
         """,
-        (user_id, today),
+        (user_id, day),
     ).fetchone()
     return dict(row) if row else None
 
@@ -346,14 +378,14 @@ async def delete_last_food_log(user_id: int, date_str: Optional[str] = None) -> 
 async def delete_todays_food_logs(user_id: int, date_str: Optional[str] = None) -> list[dict]:
     """Remove every entry logged for a day (used by 'hapus semua makananku')."""
     db = await get_db()
-    today = as_date(date_str or date.today())
+    day = await resolve_day(user_id, date_str)
     rows = await db.execute(
         """
         DELETE FROM food_logs
         WHERE user_id = $1 AND date = $2
         RETURNING id, food_name, amount_g, calories, protein_g, carbs_g, fat_g
         """,
-        (user_id, today),
+        (user_id, day),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -435,7 +467,7 @@ async def replace_food_log(
     leave the user with neither the old nor the new data.
     """
     db = await get_db()
-    today = as_date(log_date or date.today())
+    day = await resolve_day(user_id, log_date)
 
     existing = await get_food_log(user_id, log_id)
     if not existing:
@@ -469,7 +501,7 @@ async def replace_food_log(
                 RETURNING id
                 """,
                 (
-                    user_id, today, meal, item.food_name, item.amount_g,
+                    user_id, day, meal, item.food_name, item.amount_g,
                     nutrition.calories, nutrition.protein_g, nutrition.carbs_g, nutrition.fat_g,
                 ),
             ).fetchval()
@@ -516,9 +548,11 @@ async def get_nutrition_history(user_id: int, days: int = 7) -> list[dict]:
     Only returns days where at least 1 food entry was logged.
     """
     db = await get_db()
-    today = date.today()
-    since = as_date(today - timedelta(days=days))
-    today_str = as_date(today)
+    # Anchored to the user's own "today", so the 7-day window does not slide
+    # across a day boundary at a different wall-clock time than theirs.
+    today_local = user_today(user_id)
+    since = as_date(today_local - timedelta(days=days))
+    today_local = as_date(today_local)
 
     # ROUND() needs numeric (not double precision), so cast twice.
     rows = await db.execute(
@@ -537,7 +571,7 @@ async def get_nutrition_history(user_id: int, days: int = 7) -> list[dict]:
         GROUP BY date
         ORDER BY date DESC
         """,
-        (user_id, since, today_str),
+        (user_id, since, today_local),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -608,6 +642,9 @@ async def get_adaptive_target(user_id: int) -> Optional[dict]:
 async def get_daily_totals_for(user_id: int, date_str: str) -> dict:
     """Totals for an arbitrary date (used by correction previews)."""
     return await get_daily_consumed(user_id, date_str)
+
+
+
 
 
 

@@ -82,6 +82,25 @@ def _resolve_database_url() -> str | None:
     return None
 
 
+class _FrozenDatetime:
+    """Stand-in for `datetime` whose `now(tz)` returns a fixed instant.
+
+    Used to pin the clock inside timezone assertions without touching the
+    system clock (which would be flaky and affect other tests).
+    """
+
+    def __init__(self, moment):
+        self._moment = moment
+
+    def now(self, tz=None):
+        if tz is None:
+            return self._moment.replace(tzinfo=None)
+        return self._moment.astimezone(tz)
+
+    def date(self):
+        return self._moment.date()
+
+
 @unittest.skipUnless(_resolve_database_url(), "DATABASE_URL not available")
 class PostgresIntegrationTests(unittest.TestCase):
     """All checks run inside one event loop (see module docstring)."""
@@ -202,7 +221,7 @@ class PostgresIntegrationTests(unittest.TestCase):
 
     async def _check_meal_type_inference(self, db) -> None:
         """meal_type used to be permanently NULL, making /today emoji useless."""
-        from services.nutrition_service import get_today_food_logs
+        from services.nutrition_service import get_today_food_logs, user_today
 
         await db.execute(
             "INSERT INTO users (user_id, name, username) VALUES ($1, $2, $3)",
@@ -213,16 +232,76 @@ class PostgresIntegrationTests(unittest.TestCase):
             """
             INSERT INTO food_logs (user_id, date, meal_type, food_name, amount_g,
                                    calories, protein_g, carbs_g, fat_g)
-            VALUES ($1, current_date, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
             """,
-            (PROBE_USER_ID, "lunch", "nasi goreng", 200.0, 320.0, 8.0, 45.0, 10.0),
+            (PROBE_USER_ID, user_today(PROBE_USER_ID), "lunch", "nasi goreng",
+             200.0, 320.0, 8.0, 45.0, 10.0),
         ).fetchval()
 
         self.assertIsInstance(logged, int)
         rows = await get_today_food_logs(PROBE_USER_ID)
         self.assertTrue(rows)
         self.assertEqual(rows[-1]["meal_type"], "lunch")
+
+    async def _check_today_follows_user_timezone(self, db) -> None:
+        """Regression test for a real data-correctness bug.
+
+        date.today() reads the machine's timezone. On Hugging Face the
+        container runs in UTC while users are in Asia/Jakarta (UTC+7), so
+        between 00:00 and 07:00 WIB the UTC date is still the previous day.
+        Meals logged then got filed under yesterday and /today showed nothing.
+
+        `user_today()` must be derived from the user's stored timezone, so it
+        stays correct even when the app machine and the user disagree.
+        """
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from services.nutrition_service import user_today
+        from services.user_service import (
+            create_or_update_user,
+            update_user_timezone,
+        )
+
+        # WIB is UTC+7 with no DST: between 00:00 and 07:00 WIB the UTC date is
+        # the day before.
+        for hour in (0, 3, 6):
+            probe = PROBE_USER_ID + hour
+            wib = ZoneInfo("Asia/Jakarta")
+            sample = datetime(2026, 10, 12, hour, 0, tzinfo=wib)
+
+            expected_utc_date = sample.astimezone(ZoneInfo("UTC")).date()
+            expected_wib_date = sample.date()
+
+            # Only instructive when the two actually differ.
+            if expected_utc_date == expected_wib_date:
+                continue
+
+            await create_or_update_user(probe, "TZ Probe", None, "Asia/Jakarta")
+            await update_user_timezone(probe, "Asia/Jakarta")
+            try:
+                # Pin the clock by patching the helper's clock source instead of
+                # the system clock, then verify the chosen date.
+                import services.nutrition_service as ns
+
+                original = ns.datetime
+                ns.datetime = _FrozenDatetime(sample)
+                try:
+                    actual = user_today(probe)
+                finally:
+                    ns.datetime = original
+
+                self.assertEqual(
+                    actual, expected_wib_date,
+                    f"user_today must use the user's timezone at {hour:02d}:00 WIB",
+                )
+                self.assertNotEqual(
+                    actual, expected_utc_date,
+                    "user_today must not fall back to the machine/UTC date",
+                )
+            finally:
+                await db.execute("DELETE FROM users WHERE user_id=$1", (probe,))
 
     async def _check_activity_due_reminder(self, db) -> None:
         from datetime import datetime, timedelta, timezone
@@ -361,6 +440,7 @@ class PostgresIntegrationTests(unittest.TestCase):
             ("async with cursor pattern", self._check_async_with_cursor),
             ("RETURNING id + fetchval", self._check_returning_id),
             ("meal_type is populated", self._check_meal_type_inference),
+            ("today follows user timezone", self._check_today_follows_user_timezone),
             ("? placeholder translation", self._check_question_mark_translation),
             ("literal ? preserved", self._check_literal_question_mark),
             ("transaction rollback", self._check_transaction_rollback),
@@ -392,5 +472,6 @@ class PostgresIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
