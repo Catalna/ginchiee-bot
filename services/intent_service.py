@@ -214,12 +214,32 @@ Pilih TEPAT SATU action:
    Isi: {{"target": "semua" atau "terakhir" atau nama makanan}}
    Contoh: "hapus nasi goreng dari catatan", "gajadi deh nasi tadi hapus aja", "hapus semua makananku hari ini".
 
-4. ADD_ACTIVITY - user ingin MENYIMPAN kegiatan/jadwal baru.
-   Isi: {{"title": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "description": "...", "remind_mins": 30}}
+4. ADD_ACTIVITY - user ingin MENYIMPAN kegiatan/jadwal/acara baru, atau minta
+   diingatkan sesuatu. Isi:
+   {{"title": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "description": "...", "remind_mins": 30}}
    Slot wajib: title, date, time. Kalau user belum menyebut salah satunya,
    kosongkan field tsb (biarkan "") dan laporkan di "missing".
    Untuk "besok jam 3 sore" pakai date/tanggal besok dan time 15:00 (sore = 15:00-18:00).
-   Contoh: "ingetin aku besok jam 10 meeting", "tambahin jadwal kontrol dokter lusa".
+
+   WAJIB pilih ADD_ACTIVITY kalau pesan mengandung salah satu pemicu ini,
+   TERLEPAS dari berapa informasi yang ada:
+   - "ingetin aku...", "ingetin ya...", "tolong ingetin...", "bisa ingetin aku?"
+   - "jangan lupa aku...", "pengingat..."
+   - "masukkan ke jadwal/kegiatan/agenda", "catat jadwal", "simpen jadwal"
+   - pernyataan rencana yang punya hari/tanggal/jam: "aku ada X besok jam 10",
+     "aku mau X jam 2 sore", "besok ada X", "lusa ada X jam 3"
+   Kalau hanya pemicu tanpa detail (mis. "ingetin aku ya"), tetap ADD_ACTIVITY
+   dengan missing berisi semua slot yang belum diketahui. JANGAN jatuh ke CHAT.
+
+   URUTAN KATA TIDAK PENTING. Semua ini sama saja:
+   - "aku mau ngechat pacar jam 2 sore"
+   - "jam 2 sore aku mau ngechat pacar"
+   - "jam 2 sore yaa, aku mau ngechat pacar"
+
+   JUDUL HARUS BARU. Judul kegiatan hanya boleh berasal dari pesan user.
+   DILARANG KERAS menyalin judul dari "Kegiatan milik user yang tersimpan" di
+   atas — daftar itu hanya untuk melacak kegiatan yang mau diubah/dihapus.
+   Kalau user belum menyebut judulnya, title dibiarkan "" dan masuk ke missing.
 
 5. UPDATE_ACTIVITY - user ingin MENGUBAH kegiatan yang sudah ada.
    Isi: {{"target": "nama/judul kegiatan", "title": "...", "date": "...", "time": "...", "description": "...", "remind_mins": 30}}
@@ -237,8 +257,10 @@ Pilih TEPAT SATU action:
    Isi: {{"name": "nama baru"}}
    Contoh: "panggil aku Bella aja", "ganti nama aku ya", "namaku sekarang Gyna".
 
-9. VIEW_AGENDA - user minta MELIHAT jadwal/kegiatan.
+9. VIEW_AGENDA - user minta MELIHAT jadwal/kegiatan/agenda.
    Isi: {{}}
+   Pemicu: "agenda aku apa aja", "ada jadwal apa", "list kegiatan aku",
+   "apa aja yang harus aku lakukan", "kegiatan minggu ini apa", "jadwalku dong".
 
 10. CHAT - selain semua di atas: ngobrol santai, tanya jawab, curhat, cerita,
     pujian, atau menanyakan progress makanan (bukan mencatat).

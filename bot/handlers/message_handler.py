@@ -14,9 +14,12 @@ TTL, so a stale inline button can never re-trigger an old action and a container
 restart simply invalidates whatever was pending.
 """
 
+import inspect
 import logging
+import re
 import secrets
 import time
+from datetime import date, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
@@ -30,6 +33,7 @@ from services.activity_service import (
     get_today_activities,
     get_upcoming_activities,
     mark_activity_done,
+    unmark_activity_done,
     update_activity,
 )
 from services.intent_service import (
@@ -147,22 +151,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # A pending activity draft absorbs follow-up slot-filling messages.
     if draft:
-        if intent.action == ACTION_ADD_ACTIVITY or _looks_like_slot_answer(text):
-            merged = _merge_draft(draft, intent)
-            if _draft_complete(merged):
-                context.user_data.pop(KEY_DRAFT, None)
-                await _stage_confirmation(
-                    update, context, user_id,
-                    Intent(action=ACTION_ADD_ACTIVITY, slots=merged["slots"], missing=[]),
-                    text,
-                )
-            else:
-                context.user_data[KEY_DRAFT] = merged
-                await _ask_for_missing(update, merged)
+        merged = _merge_draft(draft, intent)
+
+        # Deterministic safety net: the model sometimes answers CHAT for a plain
+        # "Hari Minggu, 11 Oktober 2026" while a draft is open, which used to
+        # strand the user mid-flow. Extract dates/times locally so slot filling
+        # never depends on the model remembering the draft.
+        merged = _fill_slots_locally(merged, text)
+
+        if _draft_complete(merged):
+            context.user_data.pop(KEY_DRAFT, None)
+            await _finish_activity_draft(update, context, user_id, merged, text)
             return
 
-        # Different topic: drop the stale draft and continue with the new intent.
-        context.user_data.pop(KEY_DRAFT, None)
+        # The user switched to an unrelated topic: drop the draft.
+        if intent.action not in (ACTION_ADD_ACTIVITY,) and not _looks_like_slot_answer(text):
+            context.user_data.pop(KEY_DRAFT, None)
+        else:
+            context.user_data[KEY_DRAFT] = merged
+            await _ask_for_missing(update, merged)
+            return
 
     if intent.action == ACTION_LOG_FOOD:
         await _execute_log_food(update, context, user_id, text, intent, ai_service)
@@ -177,7 +185,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _handle_chat(update, context, user_id, text, ai_service)
         return
 
-    # Everything below changes data and must be confirmed first.
+    # ── Actions that write data ──────────────────────────────────────────────
+    #
+    # Adding an activity behaves like logging food: it happens straight away.
+    # Asking "are you sure?" before saving something the user just said out
+    # loud, then asking again on the result, is what made this feel like double
+    # work. Deletion and corrections stay behind a confirmation because those
+    # are destructive and easy to trigger by accident.
+    if intent.action == ACTION_ADD_ACTIVITY and intent.is_complete:
+        await _apply_confirmed_action(
+            user_id,
+            intent,
+            reply_fn=lambda message, keyboard: update.message.reply_text(
+                message, parse_mode="Markdown", reply_markup=keyboard
+            ),
+        )
+        await _remember(user_id, text, "kegiatan disimpan")
+        return
+
     if not intent.is_complete:
         context.user_data[KEY_DRAFT] = {
             "action": intent.action,
@@ -264,25 +289,51 @@ async def _show_agenda(update, user_id: int) -> None:
         return
 
     lines = ["📅 *agenda kamu*\n"]
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    def _entry(act: dict) -> str:
+        marker = "✅" if act.get("done") else "📌"
+        return (
+            f"{marker} *{_md(act.get('title'))}*\n   🕒 "
+            f"{format_activity_datetime(act.get('activity_dt'))}"
+        )
+
     if today:
         lines.append("✨ *hari ini:*")
         for act in today:
-            marker = "✅" if act.get("done") else "📌"
-            lines.append(
-                f"{marker} *{_md(act.get('title'))}*\n   🕒 "
-                f"{format_activity_datetime(act.get('activity_dt'))}"
-            )
+            lines.append(_entry(act))
+            buttons.append(_activity_buttons(act))
 
     if future:
         lines.append("\n🗓️ *7 hari ke depan:*")
         for act in future:
-            marker = "✅" if act.get("done") else "📌"
-            lines.append(
-                f"{marker} *{_md(act.get('title'))}*\n   🕒 "
-                f"{format_activity_datetime(act.get('activity_dt'))}"
-            )
+            lines.append(_entry(act))
+            buttons.append(_activity_buttons(act))
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines.append(
+        "\n💡 _ketuk tombol di bawah buat tandai selesai atau hapus_"
+    )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
+    )
+
+
+def _activity_buttons(act: dict) -> list[InlineKeyboardButton]:
+    """Per-activity actions shown under the agenda listing."""
+    activity_id = act["id"]
+    if act.get("done"):
+        return [
+            InlineKeyboardButton(
+                "↩️ batalkan selesai", callback_data=f"undone:{activity_id}"
+            )
+        ]
+    return [
+        InlineKeyboardButton("✅ selesai", callback_data=f"done:{activity_id}"),
+        InlineKeyboardButton("🗑️ hapus", callback_data=f"del_activity:{activity_id}"),
+    ]
 
 
 async def _build_chat_context(user_id: int) -> dict:
@@ -336,17 +387,36 @@ def _draft_note(draft: dict) -> str:
 
 
 def _looks_like_slot_answer(text: str) -> bool:
-    """Whether a message plausibly supplies a missing slot value."""
-    stripped = text.strip()
-    if not stripped:
+    """Whether a message plausibly supplies a missing slot value.
+
+    Used to decide whether to keep an open draft alive. Deliberately narrow:
+    while a draft is open, a bare "besok" or "jam 3" is part of it, but a
+    sentence about something else should be allowed to start a new topic.
+    """
+    stripped = (text or "").strip()
+    if not stripped or stripped.startswith("/"):
         return False
-    if stripped.startswith("/"):
-        return False
-    words = stripped.split()
-    if len(words) <= 6:
+
+    lowered = stripped.lower()
+
+    # Signals that the user is changing the subject entirely.
+    for cue in ("hadeh", "lupakan", "udahan", "stop", "batal", "nggajadi", "nggak jadi"):
+        if cue in lowered:
+            return False
+
+    # Anything short is treated as an answer to the pending question.
+    if len(stripped.split()) <= 8:
         return True
-    # A longer sentence can still be "besok jam 3 sore ya meetingnya di kafe".
-    return any(token.isdigit() for token in stripped) if len(words) <= 14 else False
+
+    # Longer messages still count when they carry a concrete date/time.
+    return bool(
+        _CLOCK_HOUR.search(lowered)
+        or _BARE_TIME.search(lowered)
+        or _DATE_DAY_MONTH.search(lowered)
+        or _DATE_NUMERIC.search(lowered)
+        or any(word in lowered for word in ("besok", "lusa", "hari ini", "minggu", "senin",
+                                            "selasa", "rabu", "kamis", "jumat", "sabtu"))
+    )
 
 
 def _merge_draft(draft: dict, intent: Intent) -> dict:
@@ -377,19 +447,182 @@ def _draft_complete(draft: dict) -> bool:
     return not (draft.get("missing") or [])
 
 
+# ── Deterministic slot extraction ─────────────────────────────────────────────
+#
+# Filling the date/time of a half-finished activity used to depend entirely on
+# the model, which answered CHAT for plain "Hari Minggu, 11 Oktober 2026" and
+# left the user stranded mid-flow. The clock is interchangeable, the schedule is
+# not, so parse it locally.
+
+_TIME_WORDS = {
+    "pagi": 9, "subuh": 5, "dini": 5, "siang": 12, "sore": 15,
+    "petang": 17, "malam": 20, "begadang": 23,
+}
+
+_DAY_WORDS = {
+    "senin": 0, "selasa": 1, "rabu": 2, "kamis": 3,
+    "jumat": 4, "jum'at": 4, "sabtu": 5, "minggu": 6,
+}
+
+_MONTH_WORDS = {
+    "januari": 1, "februari": 2, "maret": 3, "april": 4, "mei": 5, "juni": 6,
+    "juli": 7, "agustus": 8, "september": 9, "oktober": 10, "november": 11, "desember": 12,
+}
+
+_BARE_TIME = re.compile(r"\b([01]?\d|2[0-3])[.:]([0-5]\d)\b")
+_CLOCK_HOUR = re.compile(r"\b(?:jam|pukul)\s+([01]?\d|2[0-3])(?:[.:]([0-5]\d))?\b")
+_DATE_NUMERIC = re.compile(r"\b(\d{1,2})[-/](\d{1,2})(?:[-/](\d{2,4}))?\b")
+_DATE_DAY_MONTH = re.compile(
+    r"\b(\d{1,2})\s+([a-z]+)\s*(?:(\d{4}))?\b", re.IGNORECASE
+)
+
+
+def _extract_time(text: str) -> str | None:
+    """Pull an HH:MM out of free text, including 'jam 3 sore'."""
+    lowered = text.lower()
+
+    match = _CLOCK_HOUR.search(lowered)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        # "jam 3 sore" means 15:00, not 03:00.
+        for word, shift in sorted(_TIME_WORDS.items(), key=lambda kv: -kv[1]):
+            if word in lowered and hour < 12 and shift >= 12:
+                hour += 12
+                break
+        return f"{hour:02d}:{minute:02d}"
+
+    match = _BARE_TIME.search(lowered)
+    if match:
+        return f"{int(match.group(1)):02d}:{int(match.group(2)):02d}"
+
+    for word, hour in sorted(_TIME_WORDS.items(), key=lambda kv: -kv[1]):
+        if word in lowered and "jam" not in lowered and "pukul" not in lowered:
+            return f"{hour:02d}:00"
+    return None
+
+
+def _extract_date(text: str, today: date) -> str | None:
+    """Pull a YYYY-MM-DD out of free text."""
+    lowered = text.lower()
+
+    # "Hari Minggu, 11 Oktober 2026" / "11 Oktober"
+    match = _DATE_DAY_MONTH.search(lowered)
+    if match:
+        day = int(match.group(1))
+        month = _MONTH_WORDS.get(match.group(2))
+        if month:
+            year = int(match.group(3)) if match.group(3) else today.year
+            try:
+                return date(year, month, day).isoformat()
+            except ValueError:
+                pass
+
+    # "11/10", "11-10", or "11-10-2026". Day/month order (Indonesian habit).
+    match = _DATE_NUMERIC.search(lowered)
+    if match:
+        day, month = int(match.group(1)), int(match.group(2))
+        raw_year = match.group(3)
+        if raw_year:
+            year = int(raw_year)
+            if year < 100:
+                year += 2000
+        else:
+            year = today.year
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            pass
+
+    # Weekday names resolve to the NEXT occurrence, so a reminder is never
+    # silently scheduled in the past.
+    for word, weekday in _DAY_WORDS.items():
+        if word in lowered:
+            delta = (weekday - today.weekday()) % 7
+            delta = delta or 7
+            return (today + timedelta(days=delta)).isoformat()
+
+    if "hari ini" in lowered:
+        return today.isoformat()
+    if "besok" in lowered:
+        return (today + timedelta(days=1)).isoformat()
+    if "lusa" in lowered:
+        return (today + timedelta(days=2)).isoformat()
+
+    return None
+
+
+def _fill_slots_locally(draft: dict, text: str) -> dict:
+    """Fill empty date/time slots from the raw message without calling the model."""
+    slots = dict(draft.get("slots") or {})
+    today = _today_for_draft()
+
+    if not slots.get("time"):
+        found = _extract_time(text)
+        if found:
+            slots["time"] = found
+
+    if not slots.get("date"):
+        found = _extract_date(text, today)
+        if found:
+            slots["date"] = found
+
+    draft = dict(draft)
+    draft["slots"] = slots
+    draft["missing"] = [
+        slot for slot in _REQUIRED_ACTIVITY_SLOTS if not slots.get(slot)
+    ]
+    return draft
+
+
+def _today_for_draft() -> date:
+    return date.today()
+
+
+async def _finish_activity_draft(update, context, user_id, draft, text) -> None:
+    """Save a fully-specified activity and reply with its undo/delete buttons."""
+    await _apply_confirmed_action(
+        user_id,
+        Intent(
+            action=ACTION_ADD_ACTIVITY,
+            slots=draft["slots"],
+            missing=[],
+        ),
+        reply_fn=lambda message, keyboard: update.message.reply_text(
+            message, parse_mode="Markdown", reply_markup=keyboard
+        ),
+    )
+    await _remember(user_id, text, "kegiatan disimpan")
+
+
 async def _ask_for_missing(update: Update, draft: dict) -> None:
+    """Ask for whatever an activity is still missing, in Ginchiee's voice.
+
+    Shows what is already known so the user can see the draft taking shape,
+    instead of the same "boleh, aku catatin~" line on every turn.
+    """
     slots = draft.get("slots") or {}
     missing = draft.get("missing") or list(_REQUIRED_ACTIVITY_SLOTS)
 
-    lines = ["boleh, aku catatin~"]
+    known: list[str] = []
     if slots.get("title"):
-        lines.append(f"\n📌 *{_md(slots['title'])}*")
+        known.append(f"📌 *{_md(slots['title'])}*")
+    if slots.get("date"):
+        known.append(f"🗓️ {slots['date']}")
+    elif slots.get("time"):
+        known.append(f"🕒 {slots['time']}")
 
     question = SLOT_QUESTIONS.get(missing[0], missing[0])
-    lines.append(f"\n{question}")
+
+    if known:
+        lines = ["oke, ini yang aku tangkep sejauh ini:"] + known + ["", question]
+    else:
+        lines = [question]
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-    await _remember(update.effective_user.id, update.message.text or "", "\n".join(lines))
+    await _remember(
+        update.effective_user.id, update.message.text or "", "\n".join(lines)
+    )
 
 
 # ── Confirmation ──────────────────────────────────────────────────────────────
@@ -580,7 +813,10 @@ async def handle_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
 
     try:
         message, keyboard = await _apply_confirmed_action(
-            update.effective_user.id, intent
+            update.effective_user.id, intent,
+            reply_fn=lambda m, k: query.edit_message_text(
+                m, parse_mode="Markdown", reply_markup=k
+            ),
         )
     except Exception as exc:
         logger.error("Confirmed action failed: %s", exc, exc_info=True)
@@ -608,15 +844,67 @@ async def handle_done_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("hmm, kegiatannya nggak ketemu")
         return
 
+    # Re-render the entry in place so the row now reads as completed.
     await query.edit_message_text(
-        f"✅ *{_md(updated['title'])}* selesai ya. mantap! 🎉",
+        f"✅ *{_md(updated['title'])}* selesai ya. mantap! 🎉\n"
+        f"🕒 {format_activity_datetime(updated['activity_dt'])}",
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([_activity_buttons(updated)]),
     )
     await _remember(user_id, "[tombol tandai selesai]", f"{updated['title']} selesai")
 
 
-async def _apply_confirmed_action(user_id: int, intent: Intent):
-    """Run the staged action. Returns (message, keyboard_or_None)."""
+async def handle_undone_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    try:
+        activity_id = int((query.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.edit_message_text("id-nya aneh, coba lagi ya")
+        return
+
+    updated = await unmark_activity_done(activity_id, user_id)
+    if not updated:
+        await query.edit_message_text("hmm, kegiatannya nggak ketemu")
+        return
+
+    await query.edit_message_text(
+        f"📌 *{_md(updated['title'])}*\n"
+        f"🕒 {format_activity_datetime(updated['activity_dt'])}\n\n"
+        f"_oke, aku aktifin lagi ya_",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([_activity_buttons(updated)]),
+    )
+    await _remember(user_id, "[tombol batalkan selesai]", f"{updated['title']} aktif lagi")
+
+
+async def _apply_confirmed_action(user_id: int, intent: Intent, reply_fn=None):
+    """Run an action and return (message, keyboard_or_None).
+
+    When `reply_fn` is given the result is also delivered through it, which
+    lets the same body serve both a fresh chat reply (an activity added
+    straight away) and the confirmation callback (which edits the button
+    message itself and passes None).
+    """
+    message, keyboard = await _run_action(user_id, intent)
+
+    if reply_fn is None:
+        return message, keyboard
+
+    try:
+        result = reply_fn(message, keyboard)
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to deliver action reply: %s", exc, exc_info=True)
+
+    return message, keyboard
+
+
+async def _run_action(user_id: int, intent: Intent):
+    """Execute an action. Returns (message, keyboard_or_None)."""
     slots = intent.slots or {}
     action = intent.action
 
@@ -700,7 +988,10 @@ async def _apply_confirmed_action(user_id: int, intent: Intent):
         if not when:
             return "tanggal atau jamnya masih kurang lengkap nih", None
 
-        title = str(slots.get("title"))
+        title = str(slots.get("title") or "").strip()
+        if not title:
+            return "judul kegiatannya apa nih? aku belum tangkep", None
+
         remind = int(slots.get("remind_mins", 30) or 30)
         activity_id = await add_activity(
             user_id=user_id,
@@ -710,19 +1001,16 @@ async def _apply_confirmed_action(user_id: int, intent: Intent):
             remind_mins=remind,
         )
 
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ tandai selesai", callback_data=f"done:{activity_id}"),
-                InlineKeyboardButton("🗑️ hapus", callback_data=f"del_activity:{activity_id}"),
-            ]
-        ])
-        return (
-            f"✅ oke, udah aku simpan!\n\n"
+        message = (
+            f"✅ oke, udah aku catat!\n\n"
             f"📌 *{_md(title)}*\n"
             f"🕒 {format_activity_datetime(when)} WIB\n"
-            f"⏰ aku ingatkan {remind} menit sebelumnya 🔔",
-            keyboard,
+            f"⏰ aku ingatkan {remind} menit sebelumnya 🔔"
         )
+        return message, InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ selesai", callback_data=f"done:{activity_id}"),
+            InlineKeyboardButton("🗑️ hapus", callback_data=f"del_activity:{activity_id}"),
+        ]])
 
     if action == ACTION_UPDATE_ACTIVITY:
         existing = await find_activity_by_reference(user_id, str(slots.get("target") or ""))
@@ -770,3 +1058,5 @@ def build_message_handlers():
     return [
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
     ]
+
+

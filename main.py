@@ -82,6 +82,7 @@ from bot.handlers.message_handler import (
     handle_confirm_callback,
     handle_done_callback,
     handle_message,
+    handle_undone_callback,
 )
 from bot.handlers.photo_handler import build_photo_handlers
 from bot.handlers.profile_handler import build_profile_handlers
@@ -278,6 +279,7 @@ def build_app() -> Application:
     # per-activity done/delete buttons.
     app.add_handler(CallbackQueryHandler(handle_confirm_callback, pattern=r"^confirm:"))
     app.add_handler(CallbackQueryHandler(handle_done_callback, pattern=r"^done:"))
+    app.add_handler(CallbackQueryHandler(handle_undone_callback, pattern=r"^undone:"))
 
     # Free-form text is handled by the intent router.
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
