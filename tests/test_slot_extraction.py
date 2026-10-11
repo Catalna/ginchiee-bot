@@ -25,6 +25,12 @@ from bot.handlers.message_handler import (  # noqa: E402
     _extract_date,
     _extract_time,
     _fill_slots_locally,
+    _is_pure_schedule_answer,
+    _merge_draft,
+)
+from services.intent_service import (  # noqa: E402
+    ACTION_ADD_ACTIVITY,
+    Intent,
 )
 
 # A Sunday, chosen so weekday resolution is unambiguous.
@@ -148,6 +154,84 @@ class FillSlotsTests(unittest.TestCase):
         draft = _fill_slots_locally(draft, "Jam 2 sore ginchiee")
         self.assertEqual(draft["slots"]["title"], "")
         self.assertIn("title", draft["missing"])
+
+
+class TitleLeakGuardTests(unittest.TestCase):
+    """A bare schedule answer must never be able to supply an activity title.
+
+    Regression for a real production bug: the user was mid-draft and answered
+    "Jam 9 pagi ginchiee" while the model copied the title of an activity that
+    had just been saved, so a brand-new event appeared under the old name.
+    """
+
+    def test_pure_schedule_answers(self) -> None:
+        for text in [
+            "Jam 9 pagi ginchiee",
+            "jam 3 sore",
+            "pukul 5 sore",
+            "Hari Minggu, 11 Oktober 2026",
+            "11/10",
+            "besok",
+            "hari jumat",
+            "14:30",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(_is_pure_schedule_answer(text), text)
+
+    def test_messages_that_do_carry_a_title(self) -> None:
+        for text in [
+            "ya betul, exam software engineer",
+            "rapat sama tim ya",
+            "judulnya ngechat pacar",
+            "aku ada meeting sama tim jam 9 pagi",
+            "janji sama pacar",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(_is_pure_schedule_answer(text), text)
+
+    def test_merge_refuses_a_title_from_a_pure_answer(self) -> None:
+        draft = {
+            "slots": {"title": "", "date": "2026-10-12", "time": ""},
+            "missing": ["title", "time"],
+        }
+        intent = Intent(
+            action=ACTION_ADD_ACTIVITY,
+            slots={"title": "Tugas Internship", "time": "09:00"},
+            missing=[],
+        )
+        merged = _merge_draft(draft, intent, "Jam 9 pagi ginchiee")
+        self.assertEqual(merged["slots"]["title"], "", "judul lama tidak boleh masuk")
+        self.assertEqual(merged["slots"]["time"], "09:00")
+        self.assertIn("title", merged["missing"])
+
+    def test_merge_accepts_a_genuine_new_title(self) -> None:
+        draft = {
+            "slots": {"title": "", "date": "2026-10-12", "time": "09:00"},
+            "missing": ["title"],
+        }
+        intent = Intent(
+            action=ACTION_ADD_ACTIVITY,
+            slots={"title": "ngechat pacar"},
+            missing=[],
+        )
+        merged = _merge_draft(draft, intent, "judulnya ngechat pacar")
+        self.assertEqual(merged["slots"]["title"], "ngechat pacar")
+        self.assertEqual(merged["missing"], [])
+
+    def test_merge_still_fills_a_title_when_none_was_answered(self) -> None:
+        """A normal add request carries its title in the opening message."""
+        draft = {
+            "slots": {"title": "", "date": "", "time": ""},
+            "missing": ["title", "date", "time"],
+        }
+        intent = Intent(
+            action=ACTION_ADD_ACTIVITY,
+            slots={"title": "rapat", "date": "2026-10-13", "time": "10:00"},
+            missing=[],
+        )
+        merged = _merge_draft(draft, intent, "aku ada rapat besok jam 10")
+        self.assertEqual(merged["slots"]["title"], "rapat")
+        self.assertEqual(merged["missing"], [])
 
 
 if __name__ == "__main__":

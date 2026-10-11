@@ -89,7 +89,11 @@ SLOT_QUESTIONS = {
     "time": "jam berapa?",
 }
 
-_REQUIRED_ACTIVITY_SLOTS = ("title", "date", "time")
+#: Slots an activity needs, in the order they should be asked for.
+_ACTIVITY_SLOT_ORDER = ("title", "date", "time")
+
+#: Kept for backwards compatibility with older call sites.
+_REQUIRED_ACTIVITY_SLOTS = _ACTIVITY_SLOT_ORDER
 
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
@@ -151,7 +155,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # A pending activity draft absorbs follow-up slot-filling messages.
     if draft:
-        merged = _merge_draft(draft, intent)
+        merged = _merge_draft(draft, intent, text)
 
         # Deterministic safety net: the model sometimes answers CHAT for a plain
         # "Hari Minggu, 11 Oktober 2026" while a draft is open, which used to
@@ -377,11 +381,13 @@ def _draft_note(draft: dict) -> str:
     slots = draft.get("slots") or {}
     joined_questions = " lalu ".join(SLOT_QUESTIONS.get(slot, slot) for slot in missing)
     return (
-        f"\nKamu sedang melengkapi data kegiatan "
+        f"\nKamu sedang melengkapi data kegiatan BARU "
         f"({slots.get('title') or 'judul belum ada'}). "
         f"Masih kurang: {', '.join(missing)} (pertanyaan: {joined_questions}). "
         f"Jika pesan user menjawab itu (misalnya angka jam atau tanggal), "
         f"gabungkan ke draft dan balas action ADD_ACTIVITY dengan slots yang sudah lengkap. "
+        f"PENTING: judul kegiatan BARU hanya boleh diambil dari pesan user, "
+        f"JANGAN pernah menyalin judul dari daftar 'Kegiatan milik user yang tersimpan'. "
         f"Kalau user berganti topik, balas action sesuai topik baru."
     )
 
@@ -419,7 +425,72 @@ def _looks_like_slot_answer(text: str) -> bool:
     )
 
 
-def _merge_draft(draft: dict, intent: Intent) -> dict:
+#: Words that carry no meaning of their own when answering "jam berapa?".
+_SCHEDULE_FILLER = {
+    "jam", "pukul", "hari", "tanggal", "tgl", "nih", "ya", "dong", "aja", "saja",
+    "aku", "kamu", "mau", "ada", "ginchiee", "oke", "oh", "eh", "yang", "ini",
+    "itu", "buat", "buatin", "to", "dari", "di", "ke", "jadi", "deh", "sih",
+    "pagi", "siang", "sore", "malam", "petang", "subuh", "dini", "wib",
+    "besok", "lusa", "minggu", "senin", "selasa", "rabu", "kamis", "jumat",
+    "sabtu", "oktober", "okt", "januari", "jan", "februari", "feb", "maret",
+    "mar", "april", "apr", "mei", "juni", "jun", "juli", "jul", "agustus",
+    "agu", "september", "sep", "november", "nov", "desember", "des",
+}
+
+
+def _content_beyond_schedule(text: str) -> str:
+    """Strip date/time tokens, weekday names, and filler words.
+
+    Returns whatever is left, which is only meaningful when it is empty: the
+    message then said nothing that could be a title. "Jam 9 pagi ginchiee"
+    leaves nothing, "ya betul, exam software engineer" leaves the title.
+    """
+    cleaned = text or ""
+
+    for pattern in (_CLOCK_HOUR, _BARE_TIME, _DATE_DAY_MONTH, _DATE_NUMERIC):
+        cleaned = pattern.sub(" ", cleaned)
+
+    for word in _SCHEDULE_FILLER:
+        cleaned = re.sub(
+            r"\b" + re.escape(word) + r"\b", " ", cleaned, flags=re.IGNORECASE
+        )
+
+    # Digits left over from a partial match ("12", "Okt").
+    cleaned = re.sub(r"\b\d+\b", " ", cleaned)
+
+    leftover = re.sub(r"\s+", " ", cleaned).strip()
+    # Punctuation-only leftovers ("Hari Minggu,") are not content.
+    if not re.search(r"[a-z0-9]", leftover, re.IGNORECASE):
+        return ""
+    return leftover
+
+
+def _is_pure_schedule_answer(text: str) -> bool:
+    """True when the message only supplies a date/time (and no title at all).
+
+    Enforced locally so a prompt reword cannot undo it: a model-supplied title
+    is simply not accepted for these messages.
+    """
+    lowered = (text or "").lower()
+
+    has_schedule_token = bool(
+        _CLOCK_HOUR.search(lowered)
+        or _BARE_TIME.search(lowered)
+        or _DATE_DAY_MONTH.search(lowered)
+        or _DATE_NUMERIC.search(lowered)
+        or any(
+            word in lowered
+            for word in ("besok", "lusa", "hari ini", "minggu", "senin", "selasa",
+                         "rabu", "kamis", "jumat", "sabtu")
+        )
+    )
+    if not has_schedule_token:
+        return False
+
+    return not _content_beyond_schedule(text)
+
+
+def _merge_draft(draft: dict, intent: Intent, text: str = "") -> dict:
     """Fold newly-detected slot values into a pending draft."""
     merged = {
         "action": ACTION_ADD_ACTIVITY,
@@ -429,8 +500,17 @@ def _merge_draft(draft: dict, intent: Intent) -> dict:
     }
 
     incoming = intent.slots or {}
+
+    # A pure schedule answer ("Jam 9 pagi ginchiee") must never supply a title.
+    # Without this, the model copied the title of an already-saved activity
+    # from the context list and a brand-new event was created with the old
+    # name. This is enforced locally so prompt wording cannot undo it.
+    accept_title = not _is_pure_schedule_answer(text) if text else True
+
     # Only fill blanks; never overwrite what the user already provided.
     for key in ("title", "date", "time", "description", "remind_mins", "target"):
+        if key == "title" and not accept_title:
+            continue
         value = incoming.get(key)
         if value in (None, "", 0):
             continue
@@ -438,7 +518,7 @@ def _merge_draft(draft: dict, intent: Intent) -> dict:
             merged["slots"][key] = value
 
     merged["missing"] = [
-        slot for slot in _REQUIRED_ACTIVITY_SLOTS if not merged["slots"].get(slot)
+        slot for slot in _ACTIVITY_SLOT_ORDER if not merged["slots"].get(slot)
     ]
     return merged
 
@@ -612,12 +692,25 @@ async def _ask_for_missing(update: Update, draft: dict) -> None:
     elif slots.get("time"):
         known.append(f"🕒 {slots['time']}")
 
+    # Ask for the highest-priority missing slot, and list the rest so the user
+    # knows exactly what is still outstanding.
     question = SLOT_QUESTIONS.get(missing[0], missing[0])
-
-    if known:
-        lines = ["oke, ini yang aku tangkep sejauh ini:"] + known + ["", question]
+    if len(missing) > 1:
+        lines = [
+            "oke, ini yang aku tangkep sejauh ini:",
+            *known,
+            "",
+            f"{question}",
+            "",
+            f"_masih kurang: {', '.join(SLOT_QUESTIONS.get(m, m) for m in missing)}_",
+        ]
     else:
-        lines = [question]
+        lines = [
+            "oke, ini yang aku tangkep sejauh ini:",
+            *known,
+            "",
+            f"{question}",
+        ]
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     await _remember(
