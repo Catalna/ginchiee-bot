@@ -196,7 +196,10 @@ Pilih TEPAT SATU action:
    Isi: {{"foods": [{{"name": "nasi goreng", "amount_g": 200, "calories": 320, "protein_g": 8, "carbs_g": 45, "fat_g": 10}}]}}
    Wajib isi calories. Jika user tidak sebut gram, perkirakan porsi wajar.
    Contoh: "tadi aku makan nasi goreng", "aku minum susu 1 gelas", "habis makan ayam geprek",
-   "itu ga termasuk, kurang 1 makanan lagi", "oh iya tadi aku juga ngemil biskuit".
+   "itu ga termasuk, kurang 1 makanan lagi", "oh iya tadi aku juga ngemil biskuit",
+   "hitungin kalor sate 10 tusuk dan lontong", "aku makan sate 10 tusuk".
+   "hitungin kalor X" dianggap mencatat makanan: di bot ini menghitung kalori
+   berarti mencatat dan menghitung, bukan sekadar tanya angka.
    CATATAN: ini adalah catatan BARU. Jangan berubah jadi CHAT hanya karena namanya
    sama dengan makanan yang sudah ada di arsip.
    JANGAN pilih ini untuk niat/keinginan (mis. "pengen nasi goreng", "mau makan sushi nanti") -

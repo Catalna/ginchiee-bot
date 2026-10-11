@@ -27,6 +27,7 @@ from bot.handlers.message_handler import (  # noqa: E402
     _fill_slots_locally,
     _is_pure_schedule_answer,
     _merge_draft,
+    _merge_generic_draft,
 )
 from services.intent_service import (  # noqa: E402
     ACTION_ADD_ACTIVITY,
@@ -232,6 +233,61 @@ class TitleLeakGuardTests(unittest.TestCase):
         merged = _merge_draft(draft, intent, "aku ada rapat besok jam 10")
         self.assertEqual(merged["slots"]["title"], "rapat")
         self.assertEqual(merged["missing"], [])
+
+
+class DraftDoesNotTrapOtherTopicsTests(unittest.TestCase):
+    """A food-log request must never be swallowed by an open activity draft.
+
+    Regression for a reported bug: the user had an activity draft open, then
+    typed "aku makan sate 10 tusuk dan lontong" and "ginchie", and the bot kept
+    asking for the activity's title/date/time instead of logging the food.
+    """
+
+    def test_food_log_is_not_a_schedule_answer(self) -> None:
+        for text in [
+            "aku makan sate 10 tusuk dan lontong",
+            "hitungin kalor sate 10 tusuk dan lontong",
+            "ginchie",
+            "makasih ya ginchiee",
+            "agenda aku apa aja",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(_is_pure_schedule_answer(text), text)
+
+    def test_schedule_answers_still_count(self) -> None:
+        for text in [
+            "Hari Minggu, 11 Oktober 2026",
+            "Jam 9 pagi ginchiee",
+            "besok",
+            "11/10",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(_is_pure_schedule_answer(text), text)
+
+    def test_merge_generic_draft_fills_a_single_slot(self) -> None:
+        from services.intent_service import ACTION_CHANGE_NAME
+
+        draft = {
+            "action": ACTION_CHANGE_NAME,
+            "slots": {"name": ""},
+            "missing": ["name"],
+        }
+        intent = Intent(action=ACTION_CHANGE_NAME, slots={"name": "Bella"}, missing=[])
+        merged = _merge_generic_draft(draft, intent)
+        self.assertEqual(merged["slots"]["name"], "Bella")
+        self.assertEqual(merged["missing"], [])
+
+    def test_merge_generic_draft_does_not_overwrite(self) -> None:
+        from services.intent_service import ACTION_CHANGE_NAME
+
+        draft = {
+            "action": ACTION_CHANGE_NAME,
+            "slots": {"name": "Ayyi"},
+            "missing": [],
+        }
+        intent = Intent(action=ACTION_CHANGE_NAME, slots={"name": "Bella"}, missing=[])
+        merged = _merge_generic_draft(draft, intent)
+        self.assertEqual(merged["slots"]["name"], "Ayyi")
 
 
 if __name__ == "__main__":

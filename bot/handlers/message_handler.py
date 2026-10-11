@@ -95,6 +95,15 @@ _ACTIVITY_SLOT_ORDER = ("title", "date", "time")
 #: Kept for backwards compatibility with older call sites.
 _REQUIRED_ACTIVITY_SLOTS = _ACTIVITY_SLOT_ORDER
 
+#: Required slots per action, used when completing a draft.
+_REQUIRED_SLOTS_FOR = {
+    ACTION_ADD_ACTIVITY: _ACTIVITY_SLOT_ORDER,
+    ACTION_CHANGE_NAME: ("name",),
+}
+
+#: A draft older than this is abandoned rather than kept alive forever.
+DRAFT_TTL_SECONDS = 15 * 60
+
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -142,6 +151,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.debug("Failed to send typing action: %s", exc)
 
     draft = context.user_data.get(KEY_DRAFT)
+
+    # An abandoned draft must not outlive the conversation that created it.
+    if draft and (time.time() - draft.get("started_at", 0)) > DRAFT_TTL_SECONDS:
+        logger.info("Dropping expired %s draft", draft.get("action"))
+        context.user_data.pop(KEY_DRAFT, None)
+        draft = None
+
     pending_note = _draft_note(draft) if draft else ""
 
     intent = await route_message(
@@ -155,23 +171,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # A pending activity draft absorbs follow-up slot-filling messages.
     if draft:
-        merged = _merge_draft(draft, intent, text)
-
-        # Deterministic safety net: the model sometimes answers CHAT for a plain
-        # "Hari Minggu, 11 Oktober 2026" while a draft is open, which used to
-        # strand the user mid-flow. Extract dates/times locally so slot filling
-        # never depends on the model remembering the draft.
-        merged = _fill_slots_locally(merged, text)
-
-        if _draft_complete(merged):
-            context.user_data.pop(KEY_DRAFT, None)
-            await _finish_activity_draft(update, context, user_id, merged, text)
-            return
-
-        # The user switched to an unrelated topic: drop the draft.
-        if intent.action not in (ACTION_ADD_ACTIVITY,) and not _looks_like_slot_answer(text):
+        # Only keep the draft when the new message is genuinely part of it:
+        # either the router still sees the same action, or the text is a pure
+        # schedule answer ("Hari Minggu, 11 Oktober 2026", "Jam 9 pagi").
+        #
+        # `_looks_like_slot_answer` is NOT used here: it counts any message of
+        # eight words or fewer as an answer, so "aku makan sate 10 tusuk dan
+        # lontong" kept an activity draft alive and the bot asked for a title
+        # instead of logging the food.
+        same_action = intent.action == draft.get("action")
+        if not same_action and not _is_pure_schedule_answer(text):
+            logger.info(
+                "Dropping stale %s draft; user moved on to %s",
+                draft.get("action"), intent.action,
+            )
             context.user_data.pop(KEY_DRAFT, None)
         else:
+            merged = (
+                _merge_draft(draft, intent, text)
+                if draft.get("action") == ACTION_ADD_ACTIVITY
+                else _merge_generic_draft(draft, intent)
+            )
+
+            # Deterministic safety net: the model sometimes answers CHAT for a
+            # plain "Hari Minggu, 11 Oktober 2026" while a draft is open, which
+            # used to strand the user mid-flow. Extract dates/times locally so
+            # slot filling never depends on the model remembering the draft.
+            if draft.get("action") == ACTION_ADD_ACTIVITY:
+                merged = _fill_slots_locally(merged, text)
+
+            if _draft_complete(merged):
+                context.user_data.pop(KEY_DRAFT, None)
+                await _finish_activity_draft(update, context, user_id, merged, text)
+                return
+
             context.user_data[KEY_DRAFT] = merged
             await _ask_for_missing(update, merged)
             return
@@ -392,39 +425,6 @@ def _draft_note(draft: dict) -> str:
     )
 
 
-def _looks_like_slot_answer(text: str) -> bool:
-    """Whether a message plausibly supplies a missing slot value.
-
-    Used to decide whether to keep an open draft alive. Deliberately narrow:
-    while a draft is open, a bare "besok" or "jam 3" is part of it, but a
-    sentence about something else should be allowed to start a new topic.
-    """
-    stripped = (text or "").strip()
-    if not stripped or stripped.startswith("/"):
-        return False
-
-    lowered = stripped.lower()
-
-    # Signals that the user is changing the subject entirely.
-    for cue in ("hadeh", "lupakan", "udahan", "stop", "batal", "nggajadi", "nggak jadi"):
-        if cue in lowered:
-            return False
-
-    # Anything short is treated as an answer to the pending question.
-    if len(stripped.split()) <= 8:
-        return True
-
-    # Longer messages still count when they carry a concrete date/time.
-    return bool(
-        _CLOCK_HOUR.search(lowered)
-        or _BARE_TIME.search(lowered)
-        or _DATE_DAY_MONTH.search(lowered)
-        or _DATE_NUMERIC.search(lowered)
-        or any(word in lowered for word in ("besok", "lusa", "hari ini", "minggu", "senin",
-                                            "selasa", "rabu", "kamis", "jumat", "sabtu"))
-    )
-
-
 #: Words that carry no meaning of their own when answering "jam berapa?".
 _SCHEDULE_FILLER = {
     "jam", "pukul", "hari", "tanggal", "tgl", "nih", "ya", "dong", "aja", "saja",
@@ -488,6 +488,27 @@ def _is_pure_schedule_answer(text: str) -> bool:
         return False
 
     return not _content_beyond_schedule(text)
+
+
+def _merge_generic_draft(draft: dict, intent: Intent) -> dict:
+    """Fold a single-slot intent (e.g. CHANGE_NAME) into its draft."""
+    merged = {
+        "action": draft.get("action"),
+        "slots": dict(draft.get("slots") or {}),
+        "missing": list(draft.get("missing") or []),
+        "started_at": draft.get("started_at", time.time()),
+    }
+
+    incoming = intent.slots or {}
+    for key, value in incoming.items():
+        if value in (None, "", 0):
+            continue
+        if not merged["slots"].get(key):
+            merged["slots"][key] = value
+
+    required = _REQUIRED_SLOTS_FOR.get(merged["action"], ())
+    merged["missing"] = [slot for slot in required if not merged["slots"].get(slot)]
+    return merged
 
 
 def _merge_draft(draft: dict, intent: Intent, text: str = "") -> dict:
@@ -693,16 +714,19 @@ async def _ask_for_missing(update: Update, draft: dict) -> None:
         known.append(f"🕒 {slots['time']}")
 
     # Ask for the highest-priority missing slot, and list the rest so the user
-    # knows exactly what is still outstanding.
+    # knows exactly what is still outstanding. The question is phrased once;
+    # repeating it inside the "masih kurang" list made the reply read as if the
+    # bot were asking the same thing twice.
     question = SLOT_QUESTIONS.get(missing[0], missing[0])
     if len(missing) > 1:
+        others = ", ".join(SLOT_QUESTIONS.get(m, m) for m in missing[1:])
         lines = [
             "oke, ini yang aku tangkep sejauh ini:",
             *known,
             "",
             f"{question}",
             "",
-            f"_masih kurang: {', '.join(SLOT_QUESTIONS.get(m, m) for m in missing)}_",
+            f"_masih kurang: {others}_",
         ]
     else:
         lines = [
@@ -1151,5 +1175,6 @@ def build_message_handlers():
     return [
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
     ]
+
 
 
