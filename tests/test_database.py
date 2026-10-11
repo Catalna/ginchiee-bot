@@ -235,7 +235,7 @@ class PostgresIntegrationTests(unittest.TestCase):
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
             """,
-            (PROBE_USER_ID, user_today(PROBE_USER_ID), "lunch", "nasi goreng",
+            (PROBE_USER_ID, await user_today(PROBE_USER_ID), "lunch", "nasi goreng",
              200.0, 320.0, 8.0, 45.0, 10.0),
         ).fetchval()
 
@@ -247,13 +247,17 @@ class PostgresIntegrationTests(unittest.TestCase):
     async def _check_today_follows_user_timezone(self, db) -> None:
         """Regression test for a real data-correctness bug.
 
-        date.today() reads the machine's timezone. On Hugging Face the
+        date.today() read the machine's timezone. On Hugging Face the
         container runs in UTC while users are in Asia/Jakarta (UTC+7), so
         between 00:00 and 07:00 WIB the UTC date is still the previous day.
         Meals logged then got filed under yesterday and /today showed nothing.
 
-        `user_today()` must be derived from the user's stored timezone, so it
-        stays correct even when the app machine and the user disagree.
+        The previous version of this fix called the async `_tz_for()` without
+        awaiting it, so the lookup silently failed and user_today() fell back
+        to the machine timezone — meaning the test passed through the fallback.
+        This test therefore proves the timezone is genuinely read from
+        `users.timezone` by setting an UNUSUAL zone and expecting the date to
+        follow it, which only happens if the query really runs.
         """
         from datetime import datetime
         from zoneinfo import ZoneInfo
@@ -264,44 +268,54 @@ class PostgresIntegrationTests(unittest.TestCase):
             update_user_timezone,
         )
 
-        # WIB is UTC+7 with no DST: between 00:00 and 07:00 WIB the UTC date is
-        # the day before.
-        for hour in (0, 3, 6):
-            probe = PROBE_USER_ID + hour
-            wib = ZoneInfo("Asia/Jakarta")
-            sample = datetime(2026, 10, 12, hour, 0, tzinfo=wib)
+        probe = PROBE_USER_ID + 41
 
-            expected_utc_date = sample.astimezone(ZoneInfo("UTC")).date()
-            expected_wib_date = sample.date()
+        # WIT is UTC+9 and WIB is UTC+7, so only between 22:00 and 23:59 WIB do
+        # the two zones fall on different calendar days.
+        wib = ZoneInfo("Asia/Jakarta")
+        wit = ZoneInfo("Asia/Jayapura")
+        sample = datetime(2026, 10, 12, 23, 0, tzinfo=wib)  # 23:00 WIB
 
-            # Only instructive when the two actually differ.
-            if expected_utc_date == expected_wib_date:
-                continue
+        expected_with_jakarta = sample.astimezone(wib).date()
+        expected_with_jayapura = sample.astimezone(wit).date()
 
-            await create_or_update_user(probe, "TZ Probe", None, "Asia/Jakarta")
-            await update_user_timezone(probe, "Asia/Jakarta")
+        if expected_with_jayapura == expected_with_jakarta:
+            self.skipTest("sample date lands on the same day in both zones")
+
+        await db.execute("DELETE FROM users WHERE user_id=$1", (probe,))
+        await create_or_update_user(probe, "TZ Probe", None, "Asia/Jakarta")
+        try:
+            import services.nutrition_service as ns
+
+            original = ns.datetime
+            ns.datetime = _FrozenDatetime(sample)
             try:
-                # Pin the clock by patching the helper's clock source instead of
-                # the system clock, then verify the chosen date.
-                import services.nutrition_service as ns
+                # With the user on WIB.
+                await update_user_timezone(probe, "Asia/Jakarta")
+                as_jakarta = await user_today(probe)
 
-                original = ns.datetime
-                ns.datetime = _FrozenDatetime(sample)
-                try:
-                    actual = user_today(probe)
-                finally:
-                    ns.datetime = original
-
-                self.assertEqual(
-                    actual, expected_wib_date,
-                    f"user_today must use the user's timezone at {hour:02d}:00 WIB",
-                )
-                self.assertNotEqual(
-                    actual, expected_utc_date,
-                    "user_today must not fall back to the machine/UTC date",
-                )
+                # With the user on WIT (UTC+9) the SAME instant is a later date,
+                # so only a real timezone lookup can produce this.
+                await update_user_timezone(probe, "Asia/Jayapura")
+                as_jayapura = await user_today(probe)
             finally:
-                await db.execute("DELETE FROM users WHERE user_id=$1", (probe,))
+                ns.datetime = original
+
+            self.assertEqual(
+                as_jakarta, expected_with_jakarta,
+                "user_today must honour Asia/Jakarta",
+            )
+            self.assertEqual(
+                as_jayapura, expected_with_jayapura,
+                "user_today must change when the stored timezone changes "
+                "(a fallback would keep returning the machine's date)",
+            )
+            self.assertNotEqual(
+                as_jayapura, as_jakarta,
+                "the two zones must actually differ for this test to mean anything",
+            )
+        finally:
+            await db.execute("DELETE FROM users WHERE user_id=$1", (probe,))
 
     async def _check_activity_due_reminder(self, db) -> None:
         from datetime import datetime, timedelta, timezone
@@ -472,6 +486,7 @@ class PostgresIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

@@ -30,20 +30,32 @@ logger = logging.getLogger(__name__)
 # day. Meals logged then got filed under yesterday and /today showed nothing.
 # The user's timezone is already stored in `users.timezone`, so use it.
 
-def user_today(user_id: int) -> date:
-    """Today's date as seen by this user (falls back to the app timezone)."""
+async def user_today(user_id: int) -> date:
+    """Today's date as seen by this user (falls back to the app timezone).
+
+    Async because the user's timezone lives in the database.
+    """
     import pytz
 
     from services.activity_service import _tz_for
 
+    tz_name = "Asia/Jakarta"
     try:
-        tz_name = _tz_for(user_id)
-    except Exception:
-        tz_name = "Asia/Jakarta"
+        resolved = await _tz_for(user_id)
+        if resolved:
+            tz_name = resolved
+        else:
+            from config.settings import APP_TIMEZONE
+
+            tz_name = APP_TIMEZONE
+    except Exception as exc:
+        logger.debug("Could not resolve timezone for user %s: %s", user_id, exc)
 
     try:
         return datetime.now(pytz.timezone(tz_name)).date()
-    except Exception:
+    except Exception as exc:
+        # Only here if the stored timezone string is unusable.
+        logger.warning("Invalid timezone %r for user %s: %s", tz_name, user_id, exc)
         return datetime.now().date()
 
 
@@ -51,7 +63,7 @@ async def resolve_day(user_id: int, day: Optional[str]) -> date:
     """Resolve an optional day string against the user's timezone."""
     if day:
         return as_date(day)
-    return user_today(user_id)
+    return await user_today(user_id)
 
 
 # ── Nutrition Target ──────────────────────────────────────────────────────────
@@ -550,7 +562,7 @@ async def get_nutrition_history(user_id: int, days: int = 7) -> list[dict]:
     db = await get_db()
     # Anchored to the user's own "today", so the 7-day window does not slide
     # across a day boundary at a different wall-clock time than theirs.
-    today_local = user_today(user_id)
+    today_local = await user_today(user_id)
     since = as_date(today_local - timedelta(days=days))
     today_local = as_date(today_local)
 

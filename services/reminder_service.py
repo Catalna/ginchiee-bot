@@ -28,7 +28,7 @@ async def build_reminder_context(user_id: int, meal_type: str) -> dict:
         "user_name": user["name"] if user else "kamu",
         "meal_type": meal_type,
         # The user's own date, not the container's (UTC on Hugging Face).
-        "date": user_today(user_id).isoformat(),
+        "date": (await user_today(user_id)).isoformat(),
         # Consumed today
         "calories_consumed": consumed.get("calories", 0),
         "protein_consumed": consumed.get("protein_g", 0),
